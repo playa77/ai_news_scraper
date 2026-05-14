@@ -1,0 +1,43 @@
+feeds:
+  news:
+    - name: "Ars Technica AI"
+      url: "https://feeds.arstechnica.com/arstechnica/technology-lab"
+    - name: "MIT Tech Review AI"
+      url: "https://www.technologyreview.com/feed/"
+  commentators:
+    - name: "Simon Willison"
+      url: "https://simonwillison.net/atom/everything/"
+    - name: "Jack Clark"
+      url: "https://jack-clark.com/feed/"
+
+models:
+  strong:
+    id: "deepseek/deepseek-v4-pro"
+    temperature: 0.7
+  weak:
+    id: "deepseek/deepseek-v4-flash"
+    temperature: 0.7
+
+pipeline:
+  schedule: "04:00"
+  timezone: "Europe/Berlin"
+  max_retries: 2
+  max_refinement_rounds: 3
+  retry_backoff_seconds: 30
+  article_fetch_timeout_seconds: 15
+  llm_request_timeout_seconds: 120
+
+email:
+  recipient: "recipient@gmail.com"
+  sender: "sender@gmail.com"
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_user: "sender@gmail.com"
+  smtp_password_env: "GMAIL_APP_PASSWORD"
+
+database:
+  path: "pipeline.db"
+
+openrouter:
+  api_key_env: "OPENROUTER_API_KEY"
+  base_url: "https://openrouter.ai/api/v1"

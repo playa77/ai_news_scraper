@@ -1,0 +1,9 @@
+[Unit]
+Description=AI News Pipeline Daily Timer
+
+[Timer]
+OnCalendar=*-*-* 04:00 Europe/Berlin
+Persistent=true
+
+[Install]
+WantedBy=timers.target

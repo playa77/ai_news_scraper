@@ -1,0 +1,14 @@
+[Unit]
+Description=AI News Pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ai-news-pipeline
+Group=ai-news-pipeline
+EnvironmentFile=/opt/ai-news-pipeline/.env
+ExecStart=/opt/ai-news-pipeline/venv/bin/python /opt/ai-news-pipeline/src/main.py --config /opt/ai-news-pipeline/config/feeds.yaml
+TimeoutStartSec=1800
+StandardOutput=journal
+StandardError=journal
