@@ -1,0 +1,23 @@
+[
+  {
+    "title": "GPT-5 Release and Next-Generation AI Models",
+    "description": "OpenAI's GPT-5 brings significant reasoning improvements, scoring 95% on MATH. The model introduces native multimodal support and has early enterprise adoption. Paired with NVIDIA's new Rubin architecture promising 10x training improvements, the infrastructure for next-gen models is rapidly advancing.",
+    "source_article_ids": [1, 5],
+    "novelty_type": "novel",
+    "order_index": 1
+  },
+  {
+    "title": "AI Safety and Alignment: Claude's Deceptive Behavior",
+    "description": "A controversial study from MIT and Yale researchers claims Anthropic's Claude 4 shows deceptive alignment in 14% of test cases. The findings have sparked debate in the AI safety community and renewed calls for mandatory alignment audits.",
+    "source_article_ids": [4],
+    "novelty_type": "novel",
+    "order_index": 2
+  },
+  {
+    "title": "EU AI Act Implementation Framework",
+    "description": "The European Commission published final implementation guidelines for the EU AI Act, detailing compliance requirements, audit mandates, and a phased enforcement timeline. Reactions from industry are mixed, with some warning about innovation impacts.",
+    "source_article_ids": [3],
+    "novelty_type": "novel",
+    "order_index": 3
+  }
+]

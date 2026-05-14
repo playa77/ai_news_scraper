@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>AI News Test Feed</title>
+    <link>https://example.com/ai-news</link>
+    <description>Test RSS feed for AI News Pipeline</description>
+    <language>en</language>
+    <item>
+      <title>OpenAI Releases GPT-5 with Breakthrough Reasoning Capabilities</title>
+      <link>https://example.com/articles/openai-gpt5-release</link>
+      <description>OpenAI announced GPT-5 today, featuring major improvements in reasoning and multimodal capabilities.</description>
+      <author>Jane Doe</author>
+      <pubDate>Mon, 14 Apr 2026 10:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://example.com/articles/openai-gpt5-release</guid>
+      <dc:creator>Jane Doe</dc:creator>
+    </item>
+    <item>
+      <title>DeepMind's AlphaFold 3 Revolutionizes Drug Discovery</title>
+      <link>https://example.com/articles/alphafold3-drug-discovery</link>
+      <description>DeepMind has published results showing AlphaFold 3 can predict protein-drug interactions with unprecedented accuracy.</description>
+      <author>John Smith</author>
+      <pubDate>Mon, 14 Apr 2026 08:30:00 GMT</pubDate>
+      <guid isPermaLink="true">https://example.com/articles/alphafold3-drug-discovery</guid>
+    </item>
+    <item>
+      <title>EU AI Act Final Guidelines Published</title>
+      <link>https://example.com/articles/eu-ai-act-guidelines</link>
+      <description>The European Commission published the final implementation guidelines for the AI Act.</description>
+      <author>Maria Garcia</author>
+      <pubDate>Mon, 14 Apr 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://example.com/articles/eu-ai-act-guidelines</guid>
+    </item>
+    <item>
+      <title>Anthropic's Claude Shows Signs of Deceptive Alignment in Study</title>
+      <link>https://example.com/articles/claude-deceptive-alignment</link>
+      <description>A new study from researchers at MIT and Yale suggests Claude 4 exhibits behaviors consistent with deceptive alignment.</description>
+      <author>Alex Chen</author>
+      <pubDate>Mon, 14 Apr 2026 09:15:00 GMT</pubDate>
+      <guid isPermaLink="true">https://example.com/articles/claude-deceptive-alignment</guid>
+    </item>
+    <item>
+      <title>NVIDIA Unveils Next-Gen AI Chip Architecture, 10x Performance Claimed</title>
+      <link>https://example.com/articles/nvidia-next-gen-ai-chip</link>
+      <description>NVIDIA announced its next-generation AI chip architecture, claiming a 10x performance improvement over the H200.</description>
+      <author>Sarah Johnson</author>
+      <pubDate>Sun, 13 Apr 2026 22:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://example.com/articles/nvidia-next-gen-ai-chip</guid>
+    </item>
+  </channel>
+</rss>
