@@ -23,6 +23,15 @@ Constraints:
 - novelty_type must be either "novel" or "continuation".
 - Themes should be ordered by significance (most important first).
 - Do not duplicate themes — each theme should cover a distinct topic.
+- Prefer themes supported by multiple relevant articles, but allow a single-article theme when the development is clearly significant.
+- Do not create a theme from weak, incidental, duplicate, low-information, promotional, or off-topic articles unless they connect to a broader meaningful development.
+- Do not over-merge unrelated stories. A theme should have one clear central claim or narrative.
+- Do not over-split the same story into multiple themes. If several articles discuss the same development, group them.
+- Assess significance based on likely impact on AI capability, products, infrastructure, safety, regulation, research, markets, labor, security, public trust, or developer practice.
+- Compare against the previous daily brief when provided. Mark "continuation" only when the current articles materially update a previously covered theme. Otherwise mark "novel".
+- Descriptions must be factual and source-grounded. Do not include unsupported speculation, invented context, or claims not present in the articles.
+- Titles must be specific enough that a reader can understand the development without reading the description.
+- If the article list contains fewer than 1 usable AI-relevant article, still return the best 1 theme from the available material rather than returning an empty array.
 
 === USER ===
 {previous_brief_section}

@@ -8,6 +8,12 @@ Requirements:
 - Content: Synthesize the source articles into a coherent narrative. Include key facts, context, implications, and any notable quotes or data points.
 - Citations: Reference specific sources where appropriate (e.g., "According to Ars Technica...").
 - Scope: Stay focused on the given theme. Do not introduce unrelated topics.
+- Factual grounding: Use only information supported by the Source Articles. Do not invent or infer unsupported numbers, quotes, dates, capabilities, motivations, market effects, or causal relationships.
+- Synthesis: Explain how the articles connect, where they reinforce one another, and where they differ. Do not simply summarize each article in sequence unless that is the clearest structure.
+- Balance: Preserve important caveats, uncertainty, limitations, risks, or counterarguments from the sources.
+- Precision: Avoid vague phrases such as "many experts say" unless the sources specifically support them. Avoid hype, sensationalism, and unsupported predictions.
+- Attribution: Attribute claims, data, and quotes to the relevant source when the source matters for credibility.
+- Output: Provide only the summary text, with no preamble or commentary.
 
 === USER ===
 Theme: {theme_title}
