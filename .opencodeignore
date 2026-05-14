@@ -1,0 +1,44 @@
+# Secrets
+.env
+
+# Database (binary, large, generated at runtime)
+*.db
+data/
+
+# Logs (generated at runtime)
+*.log
+logs/
+
+# Virtual environment (large, not project code)
+venv/
+.venv/
+env/
+
+# Git internals
+.git/
+
+# Python cache
+__pycache__/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# misc
+ideas.txt
+ideas/
+archive.zip
+ai_news_scraper.zip
