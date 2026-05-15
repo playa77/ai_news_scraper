@@ -172,27 +172,27 @@ class TestArgParser:
 
     def test_config_provided(self):
         parser = _build_arg_parser()
-        args = parser.parse_args(["--config", "/path/to/feeds.yaml"])
-        assert args.config == "/path/to/feeds.yaml"
+        args = parser.parse_args(["--config", "/path/to/config/"])
+        assert args.config == "/path/to/config/"
 
     def test_init_db_flag(self):
         parser = _build_arg_parser()
-        args = parser.parse_args(["--config", "feeds.yaml", "--init-db"])
+        args = parser.parse_args(["--config", "config/", "--init-db"])
         assert args.init_db is True
 
     def test_init_db_default_false(self):
         parser = _build_arg_parser()
-        args = parser.parse_args(["--config", "feeds.yaml"])
+        args = parser.parse_args(["--config", "config/"])
         assert args.init_db is False
 
     def test_log_file_default(self):
         parser = _build_arg_parser()
-        args = parser.parse_args(["--config", "feeds.yaml"])
+        args = parser.parse_args(["--config", "config/"])
         assert args.log_file == "pipeline.log"
 
     def test_log_file_custom(self):
         parser = _build_arg_parser()
-        args = parser.parse_args(["--config", "feeds.yaml", "--log-file", "/tmp/test.log"])
+        args = parser.parse_args(["--config", "config/", "--log-file", "/tmp/test.log"])
         assert args.log_file == "/tmp/test.log"
 
 
@@ -562,7 +562,7 @@ class TestMainSuccess:
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper") as mock_retry, \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
         assert excinfo.value.code == 0
@@ -594,7 +594,7 @@ class TestMainSuccess:
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper"), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
 
@@ -621,7 +621,7 @@ class TestMainInitDb:
         with patch("src.main.from_yaml", side_effect=fake_from_yaml), \
              patch("src.main.Database", return_value=db), \
              patch("src.main.setup_logging"), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml", "--init-db"]):
+              patch.object(sys, "argv", ["main.py", "--config", "config/", "--init-db"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
 
@@ -641,7 +641,7 @@ class TestMainConfigError:
 
         with patch("src.main.from_yaml", side_effect=ConfigError("bad yaml")), \
              patch("src.main.setup_logging"), \
-             patch.object(sys, "argv", ["main.py", "--config", "missing.yaml"]):
+              patch.object(sys, "argv", ["main.py", "--config", "missing/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
 
@@ -667,7 +667,7 @@ class TestMainFailure:
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
              patch("src.main.emailer.send_failure_alert"), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
 
@@ -694,7 +694,7 @@ class TestMainFailure:
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper", side_effect=StageFailedError("analyze", ValueError("boom"))), \
              patch("src.main.emailer.send_failure_alert"), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
 
@@ -716,7 +716,7 @@ class TestMainFailure:
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper", side_effect=StageFailedError("brief", ValueError("fail"))), \
              patch("src.main.emailer.send_failure_alert") as mock_alert, \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
 
@@ -738,7 +738,7 @@ class TestMainFailure:
              patch("src.main.setup_logging"), \
              patch("src.main.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
              patch("src.main.emailer.send_failure_alert", side_effect=RuntimeError("smtp down")), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
 
@@ -751,7 +751,7 @@ class TestMainFailure:
              patch("src.main.Database", return_value=db), \
              patch("src.main.setup_logging"), \
              patch.dict(os.environ, {}, clear=True), \
-             patch.object(sys, "argv", ["main.py", "--config", "feeds.yaml"]):
+             patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
 

@@ -5,7 +5,7 @@ Executes stages sequentially: Scrape → Analyze → Generate+Evaluate (per them
 a failure alert email is dispatched and the process exits with code 1.
 
 CLI flags:
-  --config     Path to the YAML configuration file (required).
+  --config     Path to the config directory containing *.yaml files (required).
   --init-db    Initialize the SQLite schema and exit.
   --log-file   Path to the JSON log file (default: ``pipeline.log``).
 """
@@ -581,7 +581,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to the YAML configuration file.",
+        help="Path to the config directory containing *.yaml files.",
     )
     parser.add_argument(
         "--init-db",

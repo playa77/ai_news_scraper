@@ -1,0 +1,7 @@
+schedule: "04:00"
+timezone: "Europe/Berlin"
+max_retries: 2
+max_refinement_rounds: 3
+retry_backoff_seconds: 30
+article_fetch_timeout_seconds: 15
+llm_request_timeout_seconds: 120

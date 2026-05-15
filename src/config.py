@@ -17,9 +17,9 @@ class ConfigError(Exception):
 
 
 def _load_dotenv_file(config_dir: str) -> None:
-    """Load .env file from the config directory or parent directories."""
+    """Load .env file from the config directory or its parent."""
     config_path = Path(config_dir)
-    # Try the parent directory (where .env typically lives) first
+    # Try the parent of config_dir (where .env typically lives) first
     env_file = config_path.parent / ".env"
     if env_file.exists():
         load_dotenv(env_file)
@@ -66,42 +66,61 @@ def _validate_env_vars(config_dict: dict) -> None:
         )
 
 
-def from_yaml(path: str) -> Config:
-    """Load and validate configuration from a YAML file.
+REQUIRED_SECTIONS = ["feeds", "models", "pipeline", "email", "database", "openrouter"]
+
+
+def from_yaml(config_dir: str) -> Config:
+    """Load and validate configuration from a directory of domain-specific YAML files.
+
+    Each ``.yaml`` file in the directory becomes a top-level config section.
+    The filename stem (without ``.yaml``) is used as the section key.
+    For example, ``feeds.yaml`` maps to the ``feeds`` section.
 
     Args:
-        path: Path to the YAML config file.
+        config_dir: Path to the config directory containing ``*.yaml`` files.
 
     Returns:
         A validated Config object.
 
     Raises:
-        ConfigError: If the file is missing, YAML is invalid, validation fails,
-                     or required environment variables are not set.
+        ConfigError: If the directory is missing, no YAML files are found,
+                     required sections are missing, or validation fails.
     """
-    config_path = Path(path)
+    config_path = Path(config_dir)
 
-    if not config_path.exists():
-        raise ConfigError(f"Config file not found: {path}")
+    if not config_path.is_dir():
+        raise ConfigError(f"Config directory not found: {config_dir}")
 
     # Load .env file before validating env vars
     _load_dotenv_file(str(config_path))
 
-    try:
-        with open(config_path, "r") as f:
-            raw = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        raise ConfigError(f"Failed to parse YAML config file '{path}': {e}") from e
+    # Load all .yaml files from the directory
+    raw: dict = {}
+    yaml_files = sorted(config_path.glob("*.yaml"))
+    if not yaml_files:
+        raise ConfigError(
+            f"No .yaml config files found in '{config_dir}'. "
+            f"Expected files: {', '.join(f + '.yaml' for f in REQUIRED_SECTIONS)}"
+        )
 
-    if raw is None:
-        raise ConfigError(f"Config file '{path}' is empty or contains no YAML content.")
+    for yaml_file in yaml_files:
+        section_name = yaml_file.stem
+        try:
+            with open(yaml_file, "r") as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Failed to parse YAML in '{yaml_file}': {e}") from e
+
+        if data is None:
+            raise ConfigError(f"Config file '{yaml_file}' is empty or contains no YAML content.")
+
+        raw[section_name] = data
 
     # Validate required top-level sections
-    required_sections = ["feeds", "models", "pipeline", "email", "database", "openrouter"]
-    for section in required_sections:
+    for section in REQUIRED_SECTIONS:
         if section not in raw:
             raise ConfigError(
-                f"Missing required section '{section}' in config file '{path}'."
+                f"Missing required config file '{section}.yaml' in '{config_dir}'."
             )
 
     # Validate feed URLs

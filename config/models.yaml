@@ -1,0 +1,6 @@
+strong:
+  id: "deepseek/deepseek-v4-pro"
+  temperature: 0.7
+weak:
+  id: "deepseek/deepseek-v4-flash"
+  temperature: 0.7

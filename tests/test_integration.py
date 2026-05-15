@@ -35,11 +35,15 @@ import pytest
 # ===================================================================
 
 
-def _make_config_file(tmp_path, db_path: str | None = None) -> str:
-    """Write a minimal YAML config to *tmp_path* and return its path."""
+def _make_config_dir(tmp_path, db_path: str | None = None) -> str:
+    """Write domain-specific YAML config files into a subdirectory and return its path."""
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir(exist_ok=True)
     if db_path is None:
         db_path = str(tmp_path / "integration_test.db")
-    config_dict = {
+
+    # Each top-level section gets its own file
+    sections = {
         "feeds": {
             "news": [{"name": "AI News", "url": "https://example.com/ai-news"}],
             "commentators": [
@@ -70,10 +74,12 @@ def _make_config_file(tmp_path, db_path: str | None = None) -> str:
             "base_url": "https://openrouter.ai/api/v1",
         },
     }
-    config_path = tmp_path / "feeds.yaml"
-    with open(config_path, "w") as f:
-        yaml.dump(config_dict, f)
-    return str(config_path)
+
+    for filename, content in sections.items():
+        with open(cfg_dir / f"{filename}.yaml", "w") as f:
+            yaml.dump(content, f)
+
+    return str(cfg_dir)
 
 
 def _make_mock_feed() -> MagicMock:
@@ -206,7 +212,7 @@ class TestFullPipelineIntegration:
 
     def test_pipeline_completes_successfully(self, tmp_path):
         """Full pipeline runs and exits with code 0."""
-        config_path = _make_config_file(tmp_path)
+        config_path = _make_config_dir(tmp_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -236,7 +242,7 @@ class TestFullPipelineIntegration:
 
     def test_pipeline_run_status_completed(self, tmp_path):
         """After successful pipeline run, status is 'completed'."""
-        config_path = _make_config_file(tmp_path)
+        config_path = _make_config_dir(tmp_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -245,7 +251,7 @@ class TestFullPipelineIntegration:
 
         # We need to intercept the Database to use a known path
         db_path = str(tmp_path / "test.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
 
         with (
             patch("src.main.LLMClient", return_value=llm_mock),
@@ -281,7 +287,7 @@ class TestFullPipelineIntegration:
     def test_articles_stored_in_db(self, tmp_path):
         """All scraped articles are stored with correct fields."""
         db_path = str(tmp_path / "test_articles.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -355,7 +361,7 @@ class TestFullPipelineIntegration:
     def test_themes_and_deliverables_stored(self, tmp_path):
         """Themes identified by analyzer + deliverables generated are stored."""
         db_path = str(tmp_path / "test_themes.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -406,7 +412,7 @@ class TestFullPipelineIntegration:
     def test_daily_brief_stored(self, tmp_path):
         """Daily brief is generated and stored with correct word count."""
         db_path = str(tmp_path / "test_brief.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -449,7 +455,7 @@ class TestFullPipelineIntegration:
     def test_emails_sent_for_brief_and_themes(self, tmp_path):
         """Correct number of emails sent: 1 brief + N themes."""
         db_path = str(tmp_path / "test_emails.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses()
         llm_mock.close = MagicMock()
@@ -487,7 +493,7 @@ class TestFullPipelineIntegration:
     def test_pipeline_idempotent_no_duplicate_articles(self, tmp_path):
         """Running the pipeline twice does not insert duplicate articles."""
         db_path = str(tmp_path / "test_idempotent.db")
-        config_path = _make_config_file(tmp_path, db_path=db_path)
+        config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
         llm_mock.complete.side_effect = _all_llm_responses() + _all_llm_responses()
         llm_mock.close = MagicMock()
