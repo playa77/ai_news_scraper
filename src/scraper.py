@@ -39,6 +39,16 @@ def run(run_id: int, db: Database, config: Config) -> None:
     """
     db.update_pipeline_run(run_id, current_stage="scrape")
 
+    # Recover articles from failed runs that were never analyzed.
+    recovered = db.recover_orphaned_articles(run_id)
+    if recovered:
+        logger.info(
+            "Recovered %d orphaned article(s) from previous failed run(s) — "
+            "reassigned to run %d",
+            recovered,
+            run_id,
+        )
+
     # Determine the reference timestamp for filtering new articles
     last_run = db.get_last_successful_run()
     if last_run:

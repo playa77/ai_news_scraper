@@ -47,6 +47,9 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         logger.info("No articles found for run %d — skipping analysis", run_id)
         return
 
+    max_themes = config.pipeline.max_themes
+    article_count = len(articles)
+
     # Build the articles section for the prompt
     articles_section = _build_articles_section(articles)
 
@@ -63,9 +66,12 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         raise AnalysisParseError("analyze.txt prompt template is malformed")
 
     system_prompt = parts[0].replace("=== SYSTEM ===\n", "").strip()
+    system_prompt = system_prompt.format(max_themes=max_themes)
     user_prompt = parts[1].strip().format(
         previous_brief_section=previous_brief_section,
         articles_section=articles_section,
+        max_themes=max_themes,
+        article_count=article_count,
     )
 
     # Call LLM and parse response
@@ -79,7 +85,7 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
     except Exception as exc:
         raise AnalysisParseError(f"LLM call failed: {exc}") from exc
 
-    themes = _parse_themes_response(raw_response, len(articles))
+    themes = _parse_themes_response(raw_response, len(articles), max_themes)
 
     # Store themes
     novelty_distribution: dict[str, int] = {}
@@ -141,7 +147,7 @@ def _build_previous_brief_section(previous_brief: Optional[dict]) -> str:
     )
 
 
-def _parse_themes_response(raw: str, article_count: int) -> list[dict]:
+def _parse_themes_response(raw: str, article_count: int, max_themes: int = 10) -> list[dict]:
     """Parse the LLM response into validated theme objects.
 
     Raises
@@ -163,9 +169,9 @@ def _parse_themes_response(raw: str, article_count: int) -> list[dict]:
     if not isinstance(themes, list):
         raise AnalysisParseError(f"Expected a JSON array, got {type(themes).__name__}")
 
-    if len(themes) < 1 or len(themes) > 5:
+    if len(themes) < 1 or len(themes) > max_themes:
         raise AnalysisParseError(
-            f"Expected 1–5 themes, got {len(themes)}"
+            f"Expected 1–{max_themes} themes, got {len(themes)}"
         )
 
     validated: list[dict] = []

@@ -10,6 +10,6 @@ Group=ai-news-pipeline
 WorkingDirectory=/opt/ai-news-pipeline
 EnvironmentFile=/opt/ai-news-pipeline/.env
 ExecStart=/opt/ai-news-pipeline/venv/bin/python -m src.main --config /opt/ai-news-pipeline/config/ --log-file /opt/ai-news-pipeline/logs/pipeline.log
-TimeoutStartSec=1800
+TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal

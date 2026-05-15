@@ -45,6 +45,7 @@ class PipelineConfig(BaseModel):
     retry_backoff_seconds: int = Field(default=30, ge=0)
     article_fetch_timeout_seconds: int = Field(default=15, ge=1)
     llm_request_timeout_seconds: int = Field(default=120, ge=1)
+    max_themes: int = Field(default=10, ge=1, le=20)
 
 
 class EmailConfig(BaseModel):

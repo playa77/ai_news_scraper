@@ -7,12 +7,19 @@ Produces three deliverables per theme:
 
 The German script is generated from source articles + English summary ONLY,
 **not** from the English script, enforcing native generation.
+
+LLM calls are parallelized:
+- Themes are processed concurrently (ThreadPoolExecutor, 3 workers).
+- Within each theme, ``script_en`` and ``script_de`` run in parallel after
+  ``summary_en`` completes.
 """
 
 from __future__ import annotations
 
 import logging
 import pathlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from .config import Config
@@ -23,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = pathlib.Path(__file__).parent.parent / "prompts"
 
+# Protect SQLite writes (WAL allows concurrent reads, but only one writer).
+_db_write_lock = threading.Lock()
+
 
 class GeneratorError(Exception):
     """Raised when content generation fails."""
@@ -31,8 +41,8 @@ class GeneratorError(Exception):
 def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> None:
     """Generate deliverables for all pending themes in this pipeline run.
 
-    Called once by the orchestrator. Iterates over all themes for the run
-    that have ``status = 'pending'``.
+    Called once by the orchestrator.  Processes pending themes concurrently
+    using a thread pool to reduce total runtime.
 
     Parameters
     ----------
@@ -46,15 +56,14 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         Configured :class:`LLMClient` for OpenRouter calls.
     """
     themes = db.get_themes_for_run(run_id)
+    pending = [t for t in themes if t["status"] == "pending"]
 
-    for theme in themes:
-        if theme["status"] != "pending":
-            continue
+    if not pending:
+        return
 
-        # Resolve source articles
+    def _process(theme: dict) -> None:
         source_article_ids = _parse_article_ids(theme["source_article_ids"])
         articles = _get_articles(db, source_article_ids)
-
         _generate_theme_deliverables(
             run_id=run_id,
             db=db,
@@ -64,6 +73,22 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
             articles=articles,
             version=1,
         )
+
+    max_workers = min(3, len(pending))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process, t): t for t in pending}
+        for future in as_completed(futures):
+            theme = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                logger.error(
+                    "Theme %d (%s) generation failed: %s",
+                    theme["id"],
+                    theme.get("title", "?"),
+                    exc,
+                )
+                raise
 
 
 def refine(
@@ -77,7 +102,8 @@ def refine(
     """Refine deliverables for a theme based on evaluation feedback.
 
     Creates new versions (incremented from previous) for all three
-    deliverable types.
+    deliverable types — ``script_en`` and ``script_de`` are refined
+    in parallel.
 
     Parameters
     ----------
@@ -99,10 +125,8 @@ def refine(
         logger.warning("No existing deliverables for theme %d — cannot refine", theme_id)
         return
 
-    # Get the current version from any deliverable
     current_version = max(v["version"] for v in latest.values())
 
-    # Get theme and articles
     themes = db.get_themes_for_run(run_id)
     theme = next((t for t in themes if t["id"] == theme_id), None)
     if not theme:
@@ -110,8 +134,8 @@ def refine(
 
     source_article_ids = _parse_article_ids(theme["source_article_ids"])
     articles = _get_articles(db, source_article_ids)
-
     articles_text = _build_articles_text(articles)
+
     refine_template = (_PROMPTS_DIR / "refine.txt").read_text(encoding="utf-8")
     parts = refine_template.split("=== USER ===")
     if len(parts) != 2:
@@ -119,38 +143,54 @@ def refine(
     refine_system = parts[0].replace("=== SYSTEM ===\n", "").strip()
     refine_user_template = parts[1].strip()
 
-    for dtype in ("summary_en", "script_en", "script_de"):
+    # Refine summary_en first (scripts depend on it for context)
+    summary_content = None
+    if "summary_en" in latest:
+        summary_content = _refine_one(
+            llm_client, config, refine_system, refine_user_template,
+            theme, articles_text, current_version, evaluation_feedback,
+            "summary_en", latest["summary_en"]["content"],
+        )
+        new_version = current_version + 1
+        with _db_write_lock:
+            db.insert_deliverable(theme_id, "summary_en", summary_content, new_version)
+        logger.info(
+            "Refined summary_en for theme %d — version %d (%d words)",
+            theme_id, new_version, _word_count(summary_content),
+        )
+
+    # Refine script_en and script_de in parallel
+    def _refine_script(dtype: str) -> None:
         if dtype not in latest:
             logger.warning("No %s deliverable for theme %d — skipping refine", dtype, theme_id)
-            continue
-
-        old_content = latest[dtype]["content"]
-        user_prompt = refine_user_template.format(
-            deliverable_type=dtype,
-            current_content=old_content,
-            evaluation_feedback=evaluation_feedback,
-            articles_text=articles_text,
+            return
+        old = latest[dtype]["content"]
+        new = _refine_one(
+            llm_client, config, refine_system, refine_user_template,
+            theme, articles_text, current_version, evaluation_feedback,
+            dtype, old,
         )
-
-        try:
-            new_content = llm_client.complete(
-                model_id=config.models.strong.id,
-                temperature=config.models.strong.temperature,
-                system_prompt=refine_system,
-                user_prompt=user_prompt,
-            )
-        except Exception as exc:
-            raise GeneratorError(f"Refinement LLM call failed for {dtype}: {exc}") from exc
-
         new_version = current_version + 1
-        db.insert_deliverable(theme_id, dtype, new_content, new_version)
+        with _db_write_lock:
+            db.insert_deliverable(theme_id, dtype, new, new_version)
         logger.info(
             "Refined %s for theme %d — version %d (%d words)",
-            dtype,
-            theme_id,
-            new_version,
-            _word_count(new_content),
+            dtype, theme_id, new_version, _word_count(new),
         )
+
+    all_script_types = ("script_en", "script_de")
+    script_types = [d for d in all_script_types if d in latest]
+    missing = [d for d in all_script_types if d not in latest]
+    for d in missing:
+        logger.warning("No %s deliverable for theme %d — skipping refine", d, theme_id)
+
+    if len(script_types) == 2:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(_refine_script, d) for d in script_types]
+            for future in futures:
+                future.result()
+    elif len(script_types) == 1:
+        _refine_script(script_types[0])
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +207,17 @@ def _generate_theme_deliverables(
     articles: list[dict],
     version: int,
 ) -> None:
-    """Generate all three deliverables for a single theme."""
+    """Generate all three deliverables for a single theme.
+
+    ``summary_en`` is generated first; ``script_en`` and ``script_de`` are
+    then generated in parallel.
+    """
     theme_id = theme["id"]
     theme_title = theme["title"]
     theme_description = theme["description"]
     articles_text = _build_articles_text(articles)
 
-    # ---- summary_en ----
+    # ---- summary_en (must complete before scripts) ----
     summary_en = _generate_one(
         llm_client=llm_client,
         config=config,
@@ -186,51 +230,78 @@ def _generate_theme_deliverables(
         deliverable_type="summary_en",
         theme_id=theme_id,
     )
-    db.insert_deliverable(theme_id, "summary_en", summary_en, version)
+    with _db_write_lock:
+        db.insert_deliverable(theme_id, "summary_en", summary_en, version)
     logger.info(
         "Generated summary_en for theme %d — version %d (%d words)",
         theme_id, version, _word_count(summary_en),
     )
 
-    # ---- script_en ----
-    script_en = _generate_one(
-        llm_client=llm_client,
-        config=config,
-        prompt_file="script_en.txt",
-        fmt_kwargs={
-            "theme_title": theme_title,
-            "theme_description": theme_description,
-            "summary_en": summary_en,
-            "articles_text": articles_text,
-        },
-        deliverable_type="script_en",
-        theme_id=theme_id,
-    )
-    db.insert_deliverable(theme_id, "script_en", script_en, version)
+    # ---- script_en + script_de in parallel ----
+    def _gen_script(dtype: str, prompt_file: str) -> str:
+        return _generate_one(
+            llm_client=llm_client,
+            config=config,
+            prompt_file=prompt_file,
+            fmt_kwargs={
+                "theme_title": theme_title,
+                "theme_description": theme_description,
+                "summary_en": summary_en,
+                "articles_text": articles_text,
+            },
+            deliverable_type=dtype,
+            theme_id=theme_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fut_en = executor.submit(_gen_script, "script_en", "script_en.txt")
+        fut_de = executor.submit(_gen_script, "script_de", "script_de.txt")
+        script_en = fut_en.result()
+        script_de = fut_de.result()
+
+    with _db_write_lock:
+        db.insert_deliverable(theme_id, "script_en", script_en, version)
     logger.info(
         "Generated script_en for theme %d — version %d (%d words)",
         theme_id, version, _word_count(script_en),
     )
-
-    # ---- script_de (German — NO English script input) ----
-    script_de = _generate_one(
-        llm_client=llm_client,
-        config=config,
-        prompt_file="script_de.txt",
-        fmt_kwargs={
-            "theme_title": theme_title,
-            "theme_description": theme_description,
-            "summary_en": summary_en,
-            "articles_text": articles_text,
-        },
-        deliverable_type="script_de",
-        theme_id=theme_id,
-    )
-    db.insert_deliverable(theme_id, "script_de", script_de, version)
+    with _db_write_lock:
+        db.insert_deliverable(theme_id, "script_de", script_de, version)
     logger.info(
         "Generated script_de for theme %d — version %d (%d words)",
         theme_id, version, _word_count(script_de),
     )
+
+
+def _refine_one(
+    llm_client: LLMClient,
+    config: Config,
+    refine_system: str,
+    refine_user_template: str,
+    theme: dict,
+    articles_text: str,
+    current_version: int,
+    evaluation_feedback: str,
+    deliverable_type: str,
+    old_content: str,
+) -> str:
+    user_prompt = refine_user_template.format(
+        deliverable_type=deliverable_type,
+        current_content=old_content,
+        evaluation_feedback=evaluation_feedback,
+        articles_text=articles_text,
+    )
+    try:
+        return llm_client.complete(
+            model_id=config.models.strong.id,
+            temperature=config.models.strong.temperature,
+            system_prompt=refine_system,
+            user_prompt=user_prompt,
+        )
+    except Exception as exc:
+        raise GeneratorError(
+            f"Refinement LLM call failed for {deliverable_type}: {exc}"
+        ) from exc
 
 
 def _generate_one(

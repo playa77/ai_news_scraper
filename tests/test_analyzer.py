@@ -99,6 +99,7 @@ def mock_config():
     config = MagicMock()
     config.models.strong.id = "deepseek/deepseek-v4-pro"
     config.models.strong.temperature = 0.5
+    config.pipeline.max_themes = 5
     return config
 
 
@@ -295,17 +296,17 @@ class TestParseThemesResponse:
     def test_zero_themes_raises_error(self):
         """0 themes should raise AnalysisParseError."""
         raw = json.dumps([])
-        with pytest.raises(AnalysisParseError, match="Expected 1.*5 themes"):
+        with pytest.raises(AnalysisParseError, match="Expected 1.*themes"):
             _parse_themes_response(raw, article_count=5)
 
     def test_six_themes_raises_error(self):
-        """6 themes (above max of 5) should raise AnalysisParseError."""
+        """Themes exceeding the explicit max should raise AnalysisParseError."""
         raw = json.dumps([
             {"title": f"T{i}", "description": "D", "novelty_type": "novel", "source_article_indices": [0]}
             for i in range(6)
         ])
         with pytest.raises(AnalysisParseError, match="Expected 1.*5 themes"):
-            _parse_themes_response(raw, article_count=5)
+            _parse_themes_response(raw, article_count=5, max_themes=5)
 
     def test_missing_required_fields_raises_error(self):
         """A theme missing 'title' or 'description' etc. raises AnalysisParseError."""
@@ -726,6 +727,8 @@ class TestPromptTemplate:
 
         assert "{previous_brief_section}" in user_part
         assert "{articles_section}" in user_part
+        assert "{max_themes}" in user_part
+        assert "{article_count}" in user_part
 
     def test_user_prompt_formatting(self, seeded_articles_db, mock_config, mock_llm):
         """Verify that run() successfully formats the user prompt with actual values."""
@@ -742,7 +745,8 @@ class TestPromptTemplate:
         assert "{previous_brief_section}" not in user_prompt
         assert "{articles_section}" not in user_prompt
         # Real content should be present
-        assert "Below is the list of articles for analysis" in user_prompt
+        assert "Below is the list of" in user_prompt
+        assert "articles for analysis" in user_prompt
 
     def test_system_prompt_has_novelty_classification_rules(self, template_path):
         """System prompt explains novel vs continuation classification."""

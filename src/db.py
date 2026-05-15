@@ -114,7 +114,7 @@ class Database:
             db_path: Path to the SQLite database file, or ``:memory:`` for in-memory.
         """
         self._db_path = db_path
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
     def initialize_schema(self) -> None:
@@ -279,6 +279,33 @@ class Database:
             (pipeline_run_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def recover_orphaned_articles(self, current_run_id: int) -> int:
+        """Reassign articles from failed runs that were never analyzed to the current run.
+
+        Articles are orphaned when a pipeline run fails after scraping but
+        before analysis completes.  This method finds those articles and
+        sets their ``pipeline_run_id`` to *current_run_id* so the analyzer
+        will see them.
+
+        Returns:
+            Number of articles recovered.
+        """
+        cursor = self._conn.execute(
+            """UPDATE articles SET pipeline_run_id = ?
+               WHERE pipeline_run_id IN (
+                   SELECT pr.id FROM pipeline_runs pr
+                   WHERE pr.status = 'failed'
+                     AND pr.id != ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM themes t
+                         WHERE t.pipeline_run_id = pr.id
+                     )
+               )""",
+            (current_run_id, current_run_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def get_article_by_id(self, article_id: int) -> Optional[dict]:
         """Return a single article by ID, or ``None``."""
