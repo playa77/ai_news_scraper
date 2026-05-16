@@ -560,7 +560,7 @@ class TestRunVerification:
         call_kwargs = mock_llm.complete.call_args[1]
         system = call_kwargs["system_prompt"]
         assert "executive briefing writer" in system.lower()
-        assert "approximately 700 words" in system
+        assert "approximately 350 words" in system
 
     def test_user_prompt_contains_themes_section(self, multi_theme_db,
                                                  mock_llm, mock_config):

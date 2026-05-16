@@ -11,7 +11,7 @@ Style Guide:
 - No markdown formatting: Write as spoken narration, not a formatted document. Use natural paragraph breaks.
 
 Requirements:
-- Word count: approximately 1000–1500 words.
+- Word count: approximately 500–750 words.
 - Language: English.
 - Factual grounding: Treat the Source Articles as the authoritative basis. Do not invent numbers, quotes, timelines, product details, capabilities, motivations, or causal claims that are not supported by the sources.
 - Clarity: Explain technical terms briefly and naturally when they appear.

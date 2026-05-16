@@ -13,7 +13,7 @@ Stil-Leitfaden:
 - Kein Markdown: Schreibe als gesprochenen Text, nicht als formatiertes Dokument. Verwende natürliche Absätze.
 
 Anforderungen:
-- Wortanzahl: ca. 1000–1500 Wörter.
+- Wortanzahl: ca. 500–750 Wörter.
 - Sprache: Deutsch (nativ geschrieben, keine Übersetzung).
 - Faktentreue: Verwende die Quellenartikel als maßgebliche Grundlage. Erfinde keine Zahlen, Zitate, Produktdetails, Zeitpunkte, Studienergebnisse oder Behauptungen, die nicht in den Quellen stehen.
 - Einordnung: Mache klar, was sicher berichtet ist, was Interpretation ist und wo Unsicherheit oder offene Fragen bestehen.

@@ -1,9 +1,9 @@
 """Generator stage — LLM-based content generation for themes.
 
 Produces three deliverables per theme:
-1. ``summary_en`` — ~750 word English summary
-2. ``script_en`` — ~1000–1500 word English YouTube script
-3. ``script_de`` — ~1000–1500 word German YouTube script (natively written)
+1. ``summary_en`` — ~375 word English summary
+2. ``script_en`` — ~500–750 word English YouTube script
+3. ``script_de`` — ~500–750 word German YouTube script (natively written)
 
 The German script is generated from source articles + English summary ONLY,
 **not** from the English script, enforcing native generation.

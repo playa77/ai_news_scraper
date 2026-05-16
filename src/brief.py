@@ -1,6 +1,6 @@
 """Brief generator stage — synthesize a daily brief from approved themes.
 
-Calls the strong LLM model to produce a ~700-word English daily brief
+Calls the strong LLM model to produce a ~350-word English daily brief
 summarizing all approved themes from the current pipeline run.
 
 The brief is stored in the ``daily_briefs`` table and retrieved by
