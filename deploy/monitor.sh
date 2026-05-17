@@ -5,18 +5,31 @@ set -euo pipefail
 # Usage: ./monitor.sh
 # Shows current pipeline run status, theme counts, deliverable progress.
 # ============================================================================
+#
+# Required environment variables:
+#   VPS_HOST          — hostname or IP of the target VPS
+#   VPS_USER          — SSH username
+#   VPS_SSH_PASSWORD  — SSH/sudo password
+# ============================================================================
 
-VPS_HOST="VPS_HOST_PLACEHOLDER"
-VPS_USER="dan"
-VPS_PASS="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD"
+: "${VPS_HOST:?VPS_HOST must be set}"
+: "${VPS_USER:?VPS_USER must be set}"
+: "${VPS_SSH_PASSWORD:?VPS_SSH_PASSWORD must be set}"
+
+export VPS_HOST VPS_USER VPS_SSH_PASSWORD
+
 VENV_PYTHON="/home/daniel/projects/ai_news_scraper/venv/bin/python3"
 
 "${VENV_PYTHON}" << 'PYEOF'
-import paramiko, json
+import json, os, paramiko
+
+HOST = os.environ["VPS_HOST"]
+USER = os.environ["VPS_USER"]
+PASS = os.environ["VPS_SSH_PASSWORD"]
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(hostname="VPS_HOST_PLACEHOLDER", username="dan", password="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD", timeout=10, port=22)
+client.connect(hostname=HOST, username=USER, password=PASS, timeout=10, port=22)
 
 # DB state
 cmd = """python3 << 'INNER'

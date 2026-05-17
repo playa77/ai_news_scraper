@@ -5,16 +5,29 @@ set -euo pipefail
 # ============================================================================
 # This script assumes:
 #   1. Local repo at /home/daniel/projects/ai_news_scraper is the source of truth
-#   2. VPS at VPS_HOST_PLACEHOLDER, user dan, password REMOVED_PLEASE_SET_VPS_SSH_PASSWORD
+#   2. VPS credentials provided via environment variables
 #   3. Deployment target is /opt/ai-news-pipeline/
 #   4. All source changes (parallel generator, orphan recovery, 
 #      configurable max_themes, increased timeout) are committed locally
 # ============================================================================
+#
+# Required environment variables:
+#   VPS_HOST          — hostname or IP of the target VPS
+#   VPS_USER          — SSH username
+#   VPS_SSH_PASSWORD  — SSH/sudo password
+#
+# Example:
+#   export VPS_HOST=1.2.3.4 VPS_USER=myself VPS_SSH_PASSWORD=...
+#   ./deploy/fresh_deploy.sh
+# ============================================================================
 
-VPS_HOST="VPS_HOST_PLACEHOLDER"
-VPS_USER="dan"
-VPS_PASS="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD"
-LOCAL_PROJECT="/home/daniel/projects/ai_news_scraper"
+: "${VPS_HOST:?VPS_HOST must be set}"
+: "${VPS_USER:?VPS_USER must be set}"
+: "${VPS_SSH_PASSWORD:?VPS_SSH_PASSWORD must be set}"
+
+export VPS_HOST VPS_USER VPS_SSH_PASSWORD LOCAL_PROJECT
+
+LOCAL_PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_TARGET="/opt/ai-news-pipeline"
 VENV_PYTHON="${LOCAL_PROJECT}/venv/bin/python3"
 
@@ -26,13 +39,12 @@ echo "========================================="
 echo ""
 echo "[1/4] Syncing project files to VPS..."
 "${VENV_PYTHON}" << 'PYEOF'
-import paramiko, os, hashlib
+import os, hashlib, paramiko
 
-HOST = "VPS_HOST_PLACEHOLDER"
-USER = "dan"
-PASS = "REMOVED_PLEASE_SET_VPS_SSH_PASSWORD"
-LOCAL = "/home/daniel/projects/ai_news_scraper"
-REMOTE = "/opt/ai-news-pipeline"
+HOST = os.environ["VPS_HOST"]
+USER = os.environ["VPS_USER"]
+PASS = os.environ["VPS_SSH_PASSWORD"]
+LOCAL = os.environ["LOCAL_PROJECT"]
 
 FILES_TO_SYNC = [
     "src/__init__.py",
@@ -70,7 +82,7 @@ sftp = client.open_sftp()
 
 for local_rel in FILES_TO_SYNC:
     local_path = os.path.join(LOCAL, local_rel)
-    remote_path = os.path.join(REMOTE, local_rel)
+    remote_path = os.path.join("/opt/ai-news-pipeline", local_rel)
     
     with open(local_path, "rb") as f:
         local_hash = hashlib.md5(f.read()).hexdigest()
@@ -80,7 +92,7 @@ for local_rel in FILES_TO_SYNC:
     # Move into place with correct ownership
     cmd = f"sudo -S mv /tmp/sync_{os.path.basename(local_rel)} {remote_path} && sudo -S chown ai-news-pipeline:ai-news-pipeline {remote_path} && echo OK"
     stdin, stdout, stderr = client.exec_command(cmd)
-    stdin.write("REMOVED_PLEASE_SET_VPS_SSH_PASSWORD\n")
+    stdin.write(PASS + "\n")
     stdin.flush()
     out = stdout.read().decode().strip()
     err = stderr.read().decode()
@@ -97,18 +109,23 @@ PYEOF
 echo ""
 echo "[2/4] Deploying systemd service file..."
 "${VENV_PYTHON}" << 'PYEOF'
-import paramiko
+import os, paramiko
+
+HOST = os.environ["VPS_HOST"]
+USER = os.environ["VPS_USER"]
+PASS = os.environ["VPS_SSH_PASSWORD"]
+LOCAL = os.environ["LOCAL_PROJECT"]
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(hostname="VPS_HOST_PLACEHOLDER", username="dan", password="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD", timeout=10, port=22)
+client.connect(hostname=HOST, username=USER, password=PASS, timeout=10, port=22)
 sftp = client.open_sftp()
-sftp.put("/home/daniel/projects/ai_news_scraper/deploy/ai-news-pipeline.service", "/tmp/ai-news-pipeline.service")
+sftp.put(os.path.join(LOCAL, "deploy/ai-news-pipeline.service"), "/tmp/ai-news-pipeline.service")
 sftp.close()
 
 cmd = "sudo -S cp /tmp/ai-news-pipeline.service /etc/systemd/system/ai-news-pipeline.service && sudo -S systemctl daemon-reload && echo OK"
 stdin, stdout, stderr = client.exec_command(cmd)
-stdin.write("REMOVED_PLEASE_SET_VPS_SSH_PASSWORD\n")
+stdin.write(PASS + "\n")
 stdin.flush()
 print(stdout.read().decode().strip())
 
@@ -123,15 +140,19 @@ PYEOF
 echo ""
 echo "[3/4] Wiping database and logs for clean slate..."
 "${VENV_PYTHON}" << 'PYEOF'
-import paramiko
+import os, paramiko
+
+HOST = os.environ["VPS_HOST"]
+USER = os.environ["VPS_USER"]
+PASS = os.environ["VPS_SSH_PASSWORD"]
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(hostname="VPS_HOST_PLACEHOLDER", username="dan", password="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD", timeout=10, port=22)
+client.connect(hostname=HOST, username=USER, password=PASS, timeout=10, port=22)
 
 cmd = "sudo -S rm -f /opt/ai-news-pipeline/pipeline.db /opt/ai-news-pipeline/pipeline.db-wal /opt/ai-news-pipeline/pipeline.db-shm /opt/ai-news-pipeline/logs/pipeline.log && echo 'DB and logs wiped'"
 stdin, stdout, stderr = client.exec_command(cmd)
-stdin.write("REMOVED_PLEASE_SET_VPS_SSH_PASSWORD\n")
+stdin.write(PASS + "\n")
 stdin.flush()
 print(stdout.read().decode().strip())
 
@@ -150,22 +171,25 @@ PYEOF
 echo ""
 echo "[4/4] Starting pipeline..."
 "${VENV_PYTHON}" << 'PYEOF'
-import paramiko
+import os, paramiko, time
+
+HOST = os.environ["VPS_HOST"]
+USER = os.environ["VPS_USER"]
+PASS = os.environ["VPS_SSH_PASSWORD"]
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(hostname="VPS_HOST_PLACEHOLDER", username="dan", password="REMOVED_PLEASE_SET_VPS_SSH_PASSWORD", timeout=10, port=22)
+client.connect(hostname=HOST, username=USER, password=PASS, timeout=10, port=22)
 
 cmd = "sudo -S systemctl start --no-block ai-news-pipeline.service"
 stdin, stdout, stderr = client.exec_command(cmd)
-stdin.write("REMOVED_PLEASE_SET_VPS_SSH_PASSWORD\n")
+stdin.write(PASS + "\n")
 stdin.flush()
 out = stdout.read().decode()
 err = stderr.read().decode()
 print("Started:", out, err)
 
 # Quick status
-import time
 time.sleep(2)
 stdin2, stdout2, stderr2 = client.exec_command("systemctl status ai-news-pipeline.service --no-pager 2>&1")
 print(stdout2.read().decode()[:500])
