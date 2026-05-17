@@ -2,10 +2,50 @@
 set -euo pipefail
 # ============================================================================
 # AI News Pipeline — Progress Monitor
-# Usage: ./monitor.sh
-# Shows current pipeline run status, theme counts, deliverable progress.
 # ============================================================================
-#
+
+show_help() {
+    cat << 'HELPEOF'
+AI News Pipeline — Progress Monitor
+
+  Connects to the remote VPS over SSH and queries the SQLite database
+  and log file to provide a status snapshot of the current (or most
+  recent) pipeline run.
+
+  Displays:
+    - Pipeline runs and their status (pending / running / completed /
+      failed) with current stage, date, and error messages.
+    - Article counts per run.
+    - Theme status counts per run (active, dropped, etc.).
+    - Deliverable counts per theme.
+    - Daily brief word counts.
+    - The last 12 non-debug log entries from the pipeline log file.
+
+  Prerequisites:
+    - A local virtual environment with paramiko installed.
+    - SSH access to the target VPS (password authentication used).
+
+  Usage:
+    export VPS_HOST=1.2.3.4 VPS_USER=myself VPS_SSH_PASSWORD=...
+    ./deploy/monitor.sh
+
+  Required environment variables:
+    VPS_HOST           Hostname or IP address of the target VPS.
+    VPS_USER           SSH username for authentication.
+    VPS_SSH_PASSWORD   Password for SSH and sudo on the VPS.
+
+  Arguments:  None.
+  Exit codes: 0 on success; non-zero on any failure (set -e).
+HELPEOF
+    exit 0
+}
+
+for arg in "$@"; do
+    if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+        show_help
+    fi
+done
+
 # Required environment variables:
 #   VPS_HOST          — hostname or IP of the target VPS
 #   VPS_USER          — SSH username

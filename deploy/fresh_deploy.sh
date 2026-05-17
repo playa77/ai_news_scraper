@@ -3,6 +3,47 @@ set -euo pipefail
 # ============================================================================
 # AI News Pipeline — Fresh Deploy & Run Script
 # ============================================================================
+
+show_help() {
+    cat << 'HELPEOF'
+AI News Pipeline — Fresh Deploy & Run Script
+
+  Syncs the local source tree to a remote VPS over SSH (rsync via
+  Paramiko), wipes the existing database and log files, deploys the
+  systemd service unit, and starts the pipeline for a clean run.
+
+  Steps performed on the remote VPS:
+    1.  Rsync source files, config, and prompts from the local checkout.
+    2.  Deploy the systemd service file and reload the daemon.
+    3.  Wipe /opt/ai-news-pipeline/pipeline.db (and journal files) and
+        /opt/ai-news-pipeline/logs/pipeline.log for a clean slate.
+    4.  Start the pipeline service via systemctl.
+
+  Prerequisites:
+    - A local virtual environment with paramiko installed.
+    - SSH access to the target VPS (password authentication used).
+
+  Usage:
+    export VPS_HOST=1.2.3.4 VPS_USER=myself VPS_SSH_PASSWORD=...
+    ./deploy/fresh_deploy.sh
+
+  Required environment variables:
+    VPS_HOST           Hostname or IP address of the target VPS.
+    VPS_USER           SSH username for authentication.
+    VPS_SSH_PASSWORD   Password for SSH and sudo on the VPS.
+
+  Arguments:  None.
+  Exit codes: 0 on success; non-zero on any failure (set -e).
+HELPEOF
+    exit 0
+}
+
+for arg in "$@"; do
+    if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+        show_help
+    fi
+done
+
 # This script assumes:
 #   1. Local repo at /home/daniel/projects/ai_news_scraper is the source of truth
 #   2. VPS credentials provided via environment variables

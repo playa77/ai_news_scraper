@@ -5,6 +5,44 @@ set -euo pipefail
 # AI News Pipeline — Automated Install Script
 # ──────────────────────────────────────────────
 
+show_help() {
+    cat << 'HELPEOF'
+AI News Pipeline — Automated Install Script
+
+  Installs the AI News Pipeline as a systemd timer service on the local
+  machine.  Performs the following steps:
+
+    1.  Create system user 'ai-news-pipeline' (if not present).
+    2.  Create directory structure under /opt/ai-news-pipeline/.
+    3.  Set ownership of the install directory to the service user.
+    4.  Copy source files, prompts, tests, and config from the project root.
+    5.  Create a Python virtual environment and install dependencies.
+    6.  Create .env from the .env.example template (if not already present).
+    7.  Install systemd service/timer units and logrotate configuration.
+    8.  Reload systemd, enable and start the daily timer.
+
+  Prerequisites:
+    - sudo access (run as root or a user with passwordless sudo).
+    - Python 3 available on the system.
+    - The repository is cloned and this script executed from within it.
+
+  Usage:
+    ./deploy/install.sh
+
+  Arguments:  None.
+  Parameters: None — all paths are derived from the script location.
+  Exit codes: 0 on success; non-zero on any failure (set -e).
+HELPEOF
+    exit 0
+}
+
+# Check for help flag before doing anything else
+for arg in "$@"; do
+    if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+        show_help
+    fi
+done
+
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$DEPLOY_DIR/.." && pwd)"
 INSTALL_DIR="/opt/ai-news-pipeline"
