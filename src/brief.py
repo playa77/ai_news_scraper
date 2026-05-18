@@ -15,6 +15,7 @@ import pathlib
 from .config import Config
 from .db import Database
 from .llm import LLMClient
+from .models import InterestConfig
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,13 @@ class BriefError(Exception):
     """Raised when daily brief generation fails."""
 
 
-def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> None:
+def run(
+    run_id: int,
+    db: Database,
+    config: Config,
+    llm_client: LLMClient,
+    interest: InterestConfig,
+) -> None:
     """Execute the brief generation stage.
 
     Parameters
@@ -38,6 +45,8 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         Parsed pipeline configuration.
     llm_client:
         Configured :class:`LLMClient` for OpenRouter calls.
+    interest:
+        The ``InterestConfig`` for this pipeline run.
     """
     db.update_pipeline_run(run_id, current_stage="brief")
 
@@ -50,7 +59,7 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
     if not approved_themes:
         logger.info("No approved themes for run %d — generating empty brief", run_id)
         brief_content = (
-            f"No new AI themes were identified for this run ({run_id}). "
+            f"No new {interest.name} themes were identified for this run ({run_id}). "
             "Check back tomorrow for updates."
         )
         word_count = _word_count(brief_content)
@@ -59,7 +68,7 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         return
 
     # Build the themes section for the prompt
-    themes_section = _build_themes_section(approved_themes, db)
+    themes_section = _build_themes_section(approved_themes, db, interest)
 
     # Load and render the prompt template
     prompt_template = (_PROMPTS_DIR / "brief.txt").read_text(encoding="utf-8")
@@ -68,7 +77,9 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         raise BriefError("brief.txt prompt template is malformed")
 
     system_prompt = parts[0].replace("=== SYSTEM ===\n", "").strip()
-    user_prompt = parts[1].strip().format(themes_section=themes_section)
+    user_prompt = parts[1].strip().format(
+        themes_section=themes_section, target_words=interest.target_brief_words
+    )
 
     try:
         brief_content = llm_client.complete(
@@ -95,19 +106,21 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
 # ---------------------------------------------------------------------------
 
 
-def _build_themes_section(themes: list[dict], db: Database) -> str:
+def _build_themes_section(
+    themes: list[dict], db: Database, interest: InterestConfig
+) -> str:
     """Build the themes section of the brief prompt from approved themes."""
     sections: list[str] = []
     for theme in themes:
-        # Get the latest summary_en for this theme
-        deliverables = db.get_latest_deliverables(theme["id"])
-        summary_text = ""
-        if "summary_en" in deliverables:
-            summary_text = deliverables["summary_en"]["content"]
-
         sections.append(f"THEME: {theme['title']}")
         sections.append(f"Type: {theme['novelty_type']}")
-        sections.append(f"Summary: {summary_text}")
+        if interest.enable_summary:
+            # Get the latest summary_en for this theme
+            deliverables = db.get_latest_deliverables(theme["id"])
+            summary_text = ""
+            if "summary_en" in deliverables:
+                summary_text = deliverables["summary_en"]["content"]
+            sections.append(f"Summary: {summary_text}")
         sections.append("")
 
     return "\n".join(sections)

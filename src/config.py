@@ -66,7 +66,7 @@ def _validate_env_vars(config_dict: dict) -> None:
         )
 
 
-REQUIRED_SECTIONS = ["feeds", "models", "pipeline", "email", "database", "openrouter"]
+REQUIRED_SECTIONS = ["models", "pipeline", "email", "database", "openrouter"]
 
 
 def from_yaml(config_dir: str) -> Config:

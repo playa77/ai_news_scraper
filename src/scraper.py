@@ -21,11 +21,12 @@ import trafilatura
 
 from .config import Config
 from .db import Database
+from .models import InterestConfig
 
 logger = logging.getLogger(__name__)
 
 
-def run(run_id: int, db: Database, config: Config) -> None:
+def run(run_id: int, db: Database, config: Config, interest: InterestConfig) -> None:
     """Execute the scrape stage.
 
     Parameters
@@ -36,6 +37,8 @@ def run(run_id: int, db: Database, config: Config) -> None:
         Open :class:`Database` instance.
     config:
         Parsed pipeline configuration.
+    interest:
+        The ``InterestConfig`` for this pipeline run.
     """
     db.update_pipeline_run(run_id, current_stage="scrape")
 
@@ -50,28 +53,28 @@ def run(run_id: int, db: Database, config: Config) -> None:
         )
 
     # Determine the reference timestamp for filtering new articles
-    last_run = db.get_last_successful_run()
+    last_run = db.get_last_successful_run(interest_id=interest.id)
     if last_run:
         cutoff = _parse_iso8601(last_run["started_at"])
     else:
         # No previous run — take articles from the last 24 hours
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    all_feeds = list(config.feeds.news) + list(config.feeds.commentators)
+    all_feeds = db.get_all_feeds(interest.id)
     total_new = 0
     status_counts: dict[str, int] = {}
 
     for feed_def in all_feeds:
-        category = "news" if feed_def in config.feeds.news else "commentator"
-        feed_id = db.upsert_feed(feed_def.url, feed_def.name, category)
+        category = feed_def["category"]
+        feed_id = feed_def["id"]
 
         try:
-            parsed = feedparser.parse(feed_def.url)
+            parsed = feedparser.parse(feed_def["url"])
         except Exception as exc:
             logger.warning(
                 "Failed to parse feed %r (name=%r): %s",
-                feed_def.url,
-                feed_def.name,
+                feed_def["url"],
+                feed_def["name"],
                 exc,
             )
             continue
@@ -79,8 +82,8 @@ def run(run_id: int, db: Database, config: Config) -> None:
         if parsed.bozo and not parsed.entries:
             logger.warning(
                 "Feed %r (name=%r) appears malformed with no entries: %s",
-                feed_def.url,
-                feed_def.name,
+                feed_def["url"],
+                feed_def["name"],
                 parsed.bozo_exception if hasattr(parsed, "bozo_exception") else "unknown",
             )
             continue
@@ -102,12 +105,18 @@ def run(run_id: int, db: Database, config: Config) -> None:
             author = entry.get("author")
             rss_excerpt = entry.get("summary", "")
 
-            # Attempt full article extraction
-            full_content, content_status = _extract_article(
-                entry.get("link", ""),
-                rss_excerpt,
-                config.pipeline.article_fetch_timeout_seconds,
-            )
+            # Attempt full article extraction (policy governed by interest config)
+            if interest.input_data_length_mode == "headers_only":
+                full_content, content_status = None, "headers_only"
+            else:
+                full_content, content_status = _extract_article(
+                    entry.get("link", ""),
+                    rss_excerpt,
+                    config.pipeline.article_fetch_timeout_seconds,
+                )
+                if interest.input_data_length_mode == "word_count" and full_content:
+                    n = interest.input_word_count or 256
+                    full_content = " ".join(full_content.split()[:n])
 
             try:
                 db.insert_article(
@@ -133,8 +142,8 @@ def run(run_id: int, db: Database, config: Config) -> None:
         logger.info(
             "Fetched %d new articles from feed %r (name=%r)",
             new_in_feed,
-            feed_def.url,
-            feed_def.name,
+            feed_def["url"],
+            feed_def["name"],
         )
 
     logger.info(

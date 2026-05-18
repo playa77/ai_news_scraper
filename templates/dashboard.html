@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AI News Pipeline{% endblock %}
+{% block content %}
+
+<div class="page-header flex items-center justify-between flex-wrap gap-1">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle">{{ interests|length }} interest{{ 's' if interests|length != 1 else '' }} configured</p>
+    </div>
+    <a href="/interest/new" class="btn btn-primary">+ New Interest</a>
+</div>
+
+{% if not interests %}
+<div class="card" style="text-align: center; padding: 3rem 2rem;">
+    <p style="font-size: 1.05rem; color: var(--text-secondary); margin-bottom: 1rem;">No interests configured yet.</p>
+    <a href="/interest/new" class="btn btn-primary">Create Your First Interest</a>
+</div>
+{% else %}
+
+{% for interest in interests %}
+<div class="dashboard-row {{ 'paused' if interest.is_paused else '' }}">
+    {# --- Name --- #}
+    <div class="dash-name">
+        <a href="/interest/{{ interest.id }}/edit">{{ interest.name }}</a>
+        {% if interest.is_paused %}
+            <span class="badge badge-yellow" style="margin-left: 0.4rem;">PAUSED</span>
+        {% endif %}
+    </div>
+
+    {# --- Interval --- #}
+    <div class="dash-meta">
+        <span style="font-weight: 500;">Every {{ interest.interval_hours }}h</span>
+    </div>
+
+    {# --- Deliverables --- #}
+    <div class="dash-deliverables">
+        <span class="badge {{ 'badge-green' if interest.enable_summary else 'badge-dim' }}">Summary</span>
+        <span class="badge {{ 'badge-green' if interest.enable_script_en else 'badge-dim' }}">Script EN</span>
+        <span class="badge {{ 'badge-green' if interest.enable_script_de else 'badge-dim' }}">Script DE</span>
+        <span class="badge {{ 'badge-green' if interest.enable_brief else 'badge-dim' }}">Brief</span>
+    </div>
+
+    {# --- Next Run --- #}
+    <div class="dash-meta">
+        <span class="text-muted">Next:</span>
+        <span style="font-weight: 500;">{{ interest.next_run }}</span>
+    </div>
+
+    {# --- Last Run --- #}
+    <div class="dash-meta">
+        <span class="text-muted">Last:</span>
+        {% set status = interest.last_run_status %}
+        {% if status == 'completed' %}
+            <span class="badge badge-green">Completed</span>
+        {% elif status == 'failed' %}
+            <span class="badge badge-red">Failed</span>
+        {% elif status == 'running' %}
+            <span class="badge badge-blue badge-pulse">Running</span>
+        {% else %}
+            <span class="badge badge-grey">Never</span>
+        {% endif %}
+        {% if interest.last_run_started and status and status != 'never' %}
+            <span style="font-size: 0.78rem; color: var(--text-muted);">{{ interest.last_run_started }}</span>
+        {% endif %}
+    </div>
+
+    {# --- Actions --- #}
+    <div class="dash-actions">
+        <a href="/interest/{{ interest.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+
+        {% if interest.is_paused %}
+            <button class="btn btn-secondary btn-sm disabled" disabled>Paused</button>
+        {% elif interest.is_running %}
+            <button class="btn btn-secondary btn-sm disabled" disabled>Running…</button>
+        {% else %}
+            <form method="POST" action="/interest/{{ interest.id }}/run" class="inline-form" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Running…';">
+                <button type="submit" class="btn btn-secondary btn-sm">Run Now</button>
+            </form>
+        {% endif %}
+
+        <form method="POST" action="/interest/{{ interest.id }}/delete" class="inline-form" onsubmit="return confirm('Permanently delete interest \u201c{{ interest.name|e }}\u201d? This cannot be undone.');">
+            <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+        </form>
+    </div>
+
+    {# --- Error --- #}
+    {% if interest.last_run_status == 'failed' and interest.error_message %}
+    <div class="dash-error">{{ interest.error_message }}</div>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% endif %}
+
+{% endblock %}

@@ -22,6 +22,7 @@ from src.generator import (
     _get_articles,
     _word_count,
 )
+from src.models import InterestConfig
 
 
 # ---------------------------------------------------------------------------
@@ -56,16 +57,27 @@ def mock_config():
 
 
 @pytest.fixture
-def seeded_run(db):
-    """Create a pipeline run and return its ID."""
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-    return run_id
+def ai_id(db):
+    """Return the ID of the default 'AI' interest created by schema initialization."""
+    return db.get_interest_by_name("AI")["id"]
 
 
 @pytest.fixture
-def seeded_feed(db, seeded_run):
+def seeded_run(db, ai_id):
+    """Create a pipeline run and return its ID."""
+    return db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+
+
+@pytest.fixture
+def interest(db):
+    """Return a default InterestConfig for the AI interest."""
+    return InterestConfig(id=1, name="AI")
+
+
+@pytest.fixture
+def seeded_feed(db, seeded_run, ai_id):
     """Create a feed and return its ID."""
-    feed_id = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+    feed_id = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
     return feed_id
 
 
@@ -244,7 +256,7 @@ class TestGermanScriptIsolation:
             "The German script must NOT receive the English script as input."
         )
 
-    def test_generate_theme_deliverables_omits_script_en_for_script_de(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_generate_theme_deliverables_omits_script_en_for_script_de(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Verify that _generate_theme_deliverables does NOT pass script_en in fmt_kwargs
         when generating script_de."""
         env = full_seeded_env
@@ -256,14 +268,14 @@ class TestGermanScriptIsolation:
 
         captured_kwargs = []
 
-        def tracking_generate_one(llm_client, config, prompt_file, fmt_kwargs, deliverable_type, theme_id):
+        def tracking_generate_one(llm_client, config, prompt_file, fmt_kwargs, deliverable_type, theme_id, target_words=None):
             captured_kwargs.append({
                 "prompt_file": prompt_file,
                 "deliverable_type": deliverable_type,
                 "fmt_kwargs_keys": set(fmt_kwargs.keys()),
                 "has_script_en": "script_en" in fmt_kwargs,
             })
-            return original_generate_one(llm_client, config, prompt_file, fmt_kwargs, deliverable_type, theme_id)
+            return original_generate_one(llm_client, config, prompt_file, fmt_kwargs, deliverable_type, theme_id, target_words=target_words)
 
         with patch("src.generator._generate_one", side_effect=tracking_generate_one):
             _generate_theme_deliverables(
@@ -271,6 +283,7 @@ class TestGermanScriptIsolation:
                 db=env["db"],
                 config=mock_config,
                 llm_client=mock_llm,
+                interest=interest,
                 theme=theme,
                 articles=articles,
                 version=1,
@@ -472,26 +485,26 @@ class TestGetArticles:
 class TestRun:
     """Integration tests for the top-level ``run()`` function."""
 
-    def test_generates_three_deliverables_per_theme(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_generates_three_deliverables_per_theme(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Each pending theme should get summary_en, script_en, and script_de."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         theme_id = env["theme"]["id"]
         deliverables = env["db"].get_latest_deliverables(theme_id)
         assert set(deliverables.keys()) == {"summary_en", "script_en", "script_de"}
 
-    def test_all_deliverables_have_version_1(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_all_deliverables_have_version_1(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """First-generation deliverables should all be version 1."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         theme_id = env["theme"]["id"]
         deliverables = env["db"].get_latest_deliverables(theme_id)
         for dtype in ("summary_en", "script_en", "script_de"):
             assert deliverables[dtype]["version"] == 1, f"{dtype} should be version 1"
 
-    def test_multiple_pending_themes_are_processed(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles):
+    def test_multiple_pending_themes_are_processed(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles, interest):
         """Multiple pending themes are all processed by run()."""
         # Insert two pending themes
         db.insert_theme(
@@ -505,13 +518,13 @@ class TestRun:
         themes = db.get_themes_for_run(seeded_run)
         assert len(themes) == 2
 
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, interest)
 
         for theme in themes:
             deliverables = db.get_latest_deliverables(theme["id"])
             assert len(deliverables) == 3, f"Theme '{theme['title']}' missing deliverables"
 
-    def test_skips_approved_themes(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles):
+    def test_skips_approved_themes(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles, interest):
         """Themes with status 'approved' should be skipped."""
         db.insert_theme(
             seeded_run, "Pending Theme", "Will be processed",
@@ -523,7 +536,7 @@ class TestRun:
         )
         db.update_theme_status(theme_id_approved, "approved")
 
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, interest)
 
         themes = db.get_themes_for_run(seeded_run)
         pending_deliverables = db.get_latest_deliverables(themes[0]["id"])
@@ -532,7 +545,7 @@ class TestRun:
         approved_deliverables = db.get_latest_deliverables(theme_id_approved)
         assert approved_deliverables == {}
 
-    def test_skips_auto_approved_themes(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles):
+    def test_skips_auto_approved_themes(self, db, mock_llm, mock_config, seeded_run, seeded_feed, seeded_articles, interest):
         """Themes with status 'auto_approved' should be skipped."""
         db.insert_theme(
             seeded_run, "Pending Theme", "Will be processed",
@@ -544,25 +557,25 @@ class TestRun:
         )
         db.update_theme_status(theme_id_auto, "auto_approved")
 
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, interest)
 
         auto_deliverables = db.get_latest_deliverables(theme_id_auto)
         assert auto_deliverables == {}
 
-    def test_handles_missing_source_articles_gracefully(self, db, mock_llm, mock_config, seeded_run, seeded_theme_no_articles):
+    def test_handles_missing_source_articles_gracefully(self, db, mock_llm, mock_config, seeded_run, seeded_theme_no_articles, interest):
         """A theme whose source articles don't exist in the DB should still
         generate deliverables (with empty articles text)."""
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, interest)
         deliverables = db.get_latest_deliverables(seeded_theme_no_articles["id"])
         # Should generate with empty articles_text
         assert set(deliverables.keys()) == {"summary_en", "script_en", "script_de"}
 
-    def test_llm_called_with_correct_prompts(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_llm_called_with_correct_prompts(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Verify the LLM is called three times with correct prompt types."""
         env = full_seeded_env
         mock_llm.complete.return_value = "Generated content"
 
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         # Should have 3 calls to complete()
         assert mock_llm.complete.call_count == 3
@@ -582,11 +595,11 @@ class TestRun:
 class TestRefine:
     """Tests for the ``refine()`` function."""
 
-    def test_creates_new_versions_for_all_deliverable_types(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_creates_new_versions_for_all_deliverable_types(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Refine should create version 2 for all 3 deliverable types."""
         env = full_seeded_env
         # First generate version 1
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         theme_id = env["theme"]["id"]
 
@@ -595,22 +608,22 @@ class TestRefine:
         mock_llm.complete.return_value = "Refined content here"
 
         # Refine
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Fix the intro, add more context")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Fix the intro, add more context", interest)
 
         deliverables = env["db"].get_latest_deliverables(theme_id)
         for dtype in ("summary_en", "script_en", "script_de"):
             assert deliverables[dtype]["version"] == 2, f"{dtype} should be version 2"
             assert deliverables[dtype]["content"] == "Refined content here"
 
-    def test_versions_increment_from_previous(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_versions_increment_from_previous(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Refining multiple times should increment versions."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         # Refine once -> version 2
         mock_llm.complete.return_value = "Refined v2"
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback 1")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback 1", interest)
 
         deliverables = env["db"].get_latest_deliverables(theme_id)
         for dtype in ("summary_en", "script_en", "script_de"):
@@ -618,50 +631,50 @@ class TestRefine:
 
         # Refine again -> version 3
         mock_llm.complete.return_value = "Refined v3"
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback 2")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback 2", interest)
 
         deliverables = env["db"].get_latest_deliverables(theme_id)
         for dtype in ("summary_en", "script_en", "script_de"):
             assert deliverables[dtype]["version"] == 3
 
-    def test_uses_refine_prompt_template(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_uses_refine_prompt_template(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Verify the refine call uses the refine.txt prompt."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         mock_llm.complete.reset_mock()
         mock_llm.complete.return_value = "Refined"
 
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Test feedback")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Test feedback", interest)
 
         # Each refine call should use the system prompt from refine.txt
         for call_args in mock_llm.complete.call_args_list:
             system_prompt = call_args[1]["system_prompt"]
             assert "revising scriptwriter" in system_prompt.lower() or "revise" in system_prompt.lower()
 
-    def test_passes_evaluation_feedback_to_llm(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_passes_evaluation_feedback_to_llm(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """The evaluation_feedback string should appear in the user prompt."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         mock_llm.complete.reset_mock()
         mock_llm.complete.return_value = "Refined"
         feedback = "The content lacks depth. Add more technical details and citations."
 
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, feedback)
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, feedback, interest)
 
         for call_args in mock_llm.complete.call_args_list:
             user_prompt = call_args[1]["user_prompt"]
             assert feedback in user_prompt, "evaluation_feedback must be passed to the LLM"
 
-    def test_handles_missing_deliverable_type(self, db, mock_llm, mock_config, full_seeded_env, caplog):
-        """If a deliverable type is missing from latest, a warning is logged and
-        it is skipped."""
+    def test_handles_missing_deliverable_type(self, db, mock_llm, mock_config, full_seeded_env, caplog, interest):
+        """If a deliverable type is missing from latest, it is silently skipped
+        (no warning needed since interest toggles already guard against this)."""
         env = full_seeded_env
         # Generate version 1 for all
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         # Delete the script_de deliverable to simulate missing type
@@ -672,54 +685,49 @@ class TestRefine:
         mock_llm.complete.return_value = "Refined"
 
         with caplog.at_level(logging.WARNING):
-            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback")
+            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback", interest)
 
-        # Should log a warning about missing script_de
-        assert any("script_de" in msg and "skipping" in msg for msg in caplog.messages), (
-            "Should log warning about missing script_de deliverable"
-        )
-
-        # Only 2 refine calls should have been made (summary_en, script_en)
+        # Only 2 refine LLM calls should have been made (summary_en, script_en)
         assert mock_llm.complete.call_count == 2
 
         # script_de should still be absent from latest
         latest = env["db"].get_latest_deliverables(theme_id)
         assert "script_de" not in latest
 
-    def test_no_existing_deliverables_logs_warning(self, db, mock_llm, mock_config, full_seeded_env, caplog):
+    def test_no_existing_deliverables_logs_warning(self, db, mock_llm, mock_config, full_seeded_env, caplog, interest):
         """If no existing deliverables exist, refine logs a warning and returns."""
         env = full_seeded_env
         theme_id = env["theme"]["id"]
 
         with caplog.at_level(logging.WARNING):
-            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback")
+            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback", interest)
 
         assert any("No existing deliverables" in msg for msg in caplog.messages)
         assert mock_llm.complete.call_count == 0
 
-    def test_refine_raises_for_unknown_theme(self, db, mock_llm, mock_config, seeded_run):
+    def test_refine_raises_for_unknown_theme(self, db, mock_llm, mock_config, seeded_run, interest):
         """Refining a theme not in the current run should raise GeneratorError."""
         # Create a theme in a different run with deliverables — the theme_id
         # exists in the DB but is not part of seeded_run's themes
-        other_run_id = db.create_pipeline_run("2026-05-13", "2026-05-13T06:00:00")
+        other_run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-13", "2026-05-13T06:00:00")
         theme_id = db.insert_theme(
             other_run_id, "Other Run Theme", "Desc", [1], "emerging", 0,
         )
         db.insert_deliverable(theme_id, "summary_en", "Some content", 1)
 
         with pytest.raises(GeneratorError, match=f"Theme {theme_id} not found"):
-            refine(seeded_run, db, mock_config, mock_llm, theme_id, "Feedback")
+            refine(seeded_run, db, mock_config, mock_llm, theme_id, "Feedback", interest)
 
-    def test_passes_correct_config_to_llm(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_passes_correct_config_to_llm(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Refine calls should pass the same config (model, temperature) as normal generation."""
         env = full_seeded_env
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         mock_llm.complete.reset_mock()
         mock_llm.complete.return_value = "Refined"
 
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback", interest)
 
         for call_args in mock_llm.complete.call_args_list:
             kwargs = call_args[1]
@@ -735,29 +743,29 @@ class TestRefine:
 class TestErrorHandling:
     """LLM client errors should be wrapped in GeneratorError."""
 
-    def test_llm_error_during_generation_raises_generator_error(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_llm_error_during_generation_raises_generator_error(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """If the LLM client raises during generation, GeneratorError should be raised."""
         env = full_seeded_env
         mock_llm.complete.side_effect = RuntimeError("API connection failed")
 
         with pytest.raises(GeneratorError, match="LLM call failed for summary_en"):
-            run(env["run_id"], env["db"], mock_config, mock_llm)
+            run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
-    def test_llm_error_during_refinement_raises_generator_error(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_llm_error_during_refinement_raises_generator_error(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """If the LLM client raises during refinement, GeneratorError should be raised."""
         env = full_seeded_env
         # First generate deliverables
         mock_llm.complete.return_value = "Generated content"
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
         theme_id = env["theme"]["id"]
 
         # Now make the LLM fail during refine
         mock_llm.complete.side_effect = RuntimeError("Refinement API error")
 
         with pytest.raises(GeneratorError, match="Refinement LLM call failed for summary_en"):
-            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback")
+            refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Feedback", interest)
 
-    def test_llm_error_does_not_corrupt_existing_deliverables(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_llm_error_does_not_corrupt_existing_deliverables(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """If the LLM fails during generation of script_en, the summary_en should still be in DB."""
         env = full_seeded_env
         # First call succeeds, second call fails
@@ -767,7 +775,7 @@ class TestErrorHandling:
         ]
 
         with pytest.raises(GeneratorError):
-            run(env["run_id"], env["db"], mock_config, mock_llm)
+            run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         # summary_en should still be inserted even though script_en failed
         theme_id = env["theme"]["id"]
@@ -775,13 +783,13 @@ class TestErrorHandling:
         assert len(history) == 1
         assert history[0]["content"] == "Summary content"
 
-    def test_no_deliverables_on_first_call_failure(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_no_deliverables_on_first_call_failure(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """If the LLM fails on the first call (summary_en), no deliverables are inserted."""
         env = full_seeded_env
         mock_llm.complete.side_effect = RuntimeError("Immediate failure")
 
         with pytest.raises(GeneratorError):
-            run(env["run_id"], env["db"], mock_config, mock_llm)
+            run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         # No deliverables should exist
         theme_id = env["theme"]["id"]
@@ -828,14 +836,14 @@ class TestGenerateOne:
 class TestFullPipeline:
     """End-to-end test of generate + refine workflow."""
 
-    def test_generate_then_refine_workflow(self, db, mock_llm, mock_config, full_seeded_env):
+    def test_generate_then_refine_workflow(self, db, mock_llm, mock_config, full_seeded_env, interest):
         """Simulate the full generate -> evaluate -> refine cycle."""
         env = full_seeded_env
         theme_id = env["theme"]["id"]
 
         # Phase 1: Generate
         mock_llm.complete.return_value = "Version 1 content"
-        run(env["run_id"], env["db"], mock_config, mock_llm)
+        run(env["run_id"], env["db"], mock_config, mock_llm, interest)
 
         v1 = env["db"].get_latest_deliverables(theme_id)
         assert all(v["version"] == 1 for v in v1.values())
@@ -843,7 +851,7 @@ class TestFullPipeline:
         # Phase 2: Refine
         mock_llm.complete.reset_mock()
         mock_llm.complete.return_value = "Version 2 content"
-        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Needs more examples")
+        refine(env["run_id"], env["db"], mock_config, mock_llm, theme_id, "Needs more examples", interest)
 
         v2 = env["db"].get_latest_deliverables(theme_id)
         assert all(v["version"] == 2 for v in v2.values())

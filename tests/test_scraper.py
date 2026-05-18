@@ -20,6 +20,7 @@ from src.models import (
     EmailConfig,
     FeedDef,
     FeedsConfig,
+    InterestConfig,
     ModelDef,
     ModelsConfig,
     OpenRouterConfig,
@@ -103,7 +104,18 @@ def mock_feed(mock_feed_entry):
 @pytest.fixture
 def run_id(db):
     """Create and return a fresh pipeline run (no previous completed run)."""
-    return db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+    ai_id = db.get_interest_by_name("AI")["id"]
+    return db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+
+
+@pytest.fixture
+def interest(run_id, db):
+    """Return an InterestConfig for the AI interest used in run_id."""
+    ai_id = db.get_interest_by_name("AI")["id"]
+    # Upsert the config feeds so the scraper can find them by interest_id
+    db.upsert_feed(ai_id, "https://example.com/ai-news", "AI News", "news")
+    db.upsert_feed(ai_id, "https://example.com/ai-commentators", "AI Commentators", "commentators")
+    return InterestConfig(id=ai_id, name="AI")
 
 
 # ---------------------------------------------------------------------------
@@ -419,14 +431,15 @@ class TestExtractArticlePaywall:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunSuccessfulScrape:
     """``run()`` happy path: feeds parsed, articles inserted, pipeline updated."""
 
-    def test_single_entry_processed(self, db, config, mock_feed, run_id):
+    def test_single_entry_processed(self, db, config, mock_feed, run_id, interest):
         """A single feed entry must be inserted as an article."""
         with patch("src.scraper.feedparser.parse", return_value=mock_feed), \
              patch("src.scraper._extract_article", return_value=("full content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
@@ -434,16 +447,16 @@ class TestRunSuccessfulScrape:
         assert articles[0]["author"] == "Test Author"
         assert articles[0]["content_status"] == "full"
 
-    def test_updates_pipeline_stage(self, db, config, mock_feed, run_id):
+    def test_updates_pipeline_stage(self, db, config, mock_feed, run_id, interest):
         """``update_pipeline_run`` must be called with ``current_stage='scrape'``."""
         with patch("src.scraper.feedparser.parse", return_value=mock_feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         run_record = db.get_pipeline_run(run_id)
         assert run_record["current_stage"] == "scrape"
 
-    def test_both_news_and_commentator_feeds(self, db, config, mock_feed_entry, run_id):
+    def test_both_news_and_commentator_feeds(self, db, config, mock_feed_entry, run_id, interest):
         """Both feed categories (news + commentators) must be processed."""
         # Override config with one feed of each type
         cfg = Config(
@@ -476,7 +489,7 @@ class TestRunSuccessfulScrape:
             "src.scraper.feedparser.parse",
             side_effect=[feed_news, feed_comment],
         ), patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, cfg)
+            run(run_id, db, cfg, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 2
@@ -486,11 +499,11 @@ class TestRunSuccessfulScrape:
             "https://example.com/comment-article",
         }
 
-    def test_article_has_required_fields(self, db, config, mock_feed, run_id):
+    def test_article_has_required_fields(self, db, config, mock_feed, run_id, interest):
         """Inserted articles must have all required fields populated."""
         with patch("src.scraper.feedparser.parse", return_value=mock_feed), \
              patch("src.scraper._extract_article", return_value=("full content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
@@ -506,18 +519,18 @@ class TestRunSuccessfulScrape:
         assert article["content_status"] == "full"
         assert article["pipeline_run_id"] == run_id
 
-    def test_feed_upserted(self, db, config, mock_feed, run_id):
+    def test_feed_upserted(self, db, config, mock_feed, run_id, interest):
         """The feed must be upserted into the database."""
         with patch("src.scraper.feedparser.parse", return_value=mock_feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         feeds = db.get_all_feeds()
         assert len(feeds) >= 1
         feed_urls = {f["url"] for f in feeds}
         assert "https://example.com/ai-news" in feed_urls
 
-    def test_multiple_entries_in_feed(self, db, config, mock_feed_entry, run_id):
+    def test_multiple_entries_in_feed(self, db, config, mock_feed_entry, run_id, interest):
         """Multiple entries in a single feed must all be processed."""
         entry2 = dict(mock_feed_entry)
         entry2["title"] = "Second Article"
@@ -535,7 +548,7 @@ class TestRunSuccessfulScrape:
                  "src.scraper._extract_article",
                  return_value=("content", "full"),
              ):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 3
@@ -543,7 +556,7 @@ class TestRunSuccessfulScrape:
         assert "Second Article" in titles
         assert "Third Article" in titles
 
-    def test_article_without_author(self, db, config, run_id):
+    def test_article_without_author(self, db, config, run_id, interest):
         """An entry without an author must still be inserted (author = ``None``)."""
         entry = {
             "title": "No Author Article",
@@ -557,13 +570,13 @@ class TestRunSuccessfulScrape:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
         assert articles[0]["author"] is None
 
-    def test_untitled_article_defaults(self, db, config, run_id):
+    def test_untitled_article_defaults(self, db, config, run_id, interest):
         """An entry without a title must default to ``'Untitled'``."""
         entry = {
             "link": "https://example.com/untitled",
@@ -576,7 +589,7 @@ class TestRunSuccessfulScrape:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
@@ -588,20 +601,21 @@ class TestRunSuccessfulScrape:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunContentStatus:
     """``run()`` correctly stores different content_status values."""
 
-    def test_full_content(self, db, config, mock_feed, run_id):
+    def test_full_content(self, db, config, mock_feed, run_id, interest):
         """``full`` content_status from article extraction must be stored."""
         with patch("src.scraper.feedparser.parse", return_value=mock_feed), \
              patch("src.scraper._extract_article", return_value=("extracted content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert articles[0]["content_status"] == "full"
         assert articles[0]["full_content"] == "extracted content"
 
-    def test_excerpt_only(self, db, config, mock_feed_entry, run_id):
+    def test_excerpt_only(self, db, config, mock_feed_entry, run_id, interest):
         """``excerpt_only`` content_status must use RSS excerpt as content."""
         entry = dict(mock_feed_entry)
         entry["link"] = "https://example.com/excerpt-only"
@@ -614,13 +628,13 @@ class TestRunContentStatus:
                  "src.scraper._extract_article",
                  return_value=("This is an RSS excerpt for testing purposes.", "excerpt_only"),
              ):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert articles[0]["content_status"] == "excerpt_only"
         assert articles[0]["full_content"] == "This is an RSS excerpt for testing purposes."
 
-    def test_paywall(self, db, config, mock_feed_entry, run_id):
+    def test_paywall(self, db, config, mock_feed_entry, run_id, interest):
         """``excerpt_paywall`` content_status must be stored."""
         entry = dict(mock_feed_entry)
         entry["link"] = "https://example.com/paywall"
@@ -633,7 +647,7 @@ class TestRunContentStatus:
                  "src.scraper._extract_article",
                  return_value=("RSS excerpt", "excerpt_paywall"),
              ):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert articles[0]["content_status"] == "excerpt_paywall"
@@ -644,14 +658,16 @@ class TestRunContentStatus:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunDeduplication:
     """``run()`` skips articles with URLs that already exist in the database."""
 
-    def test_duplicate_url_skipped(self, db, config, mock_feed_entry, run_id):
+    def test_duplicate_url_skipped(self, db, config, mock_feed_entry, run_id, interest):
         """An article whose normalized URL already exists must be skipped."""
         # Pre-insert an article with the normalized URL
         normalized = _normalize_url(mock_feed_entry["link"])
-        feed_id = db.upsert_feed("https://example.com/ai-news", "AI News", "news")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        feed_id = db.upsert_feed(ai_id, "https://example.com/ai-news", "AI News", "news")
         db.insert_article(
             feed_id=feed_id,
             url=normalized,
@@ -671,14 +687,14 @@ class TestRunDeduplication:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("new content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         # Only the pre-inserted article should exist (duplicate was skipped)
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
         assert articles[0]["title"] == "Existing"
 
-    def test_different_urls_not_deduplicated(self, db, config, mock_feed_entry, run_id):
+    def test_different_urls_not_deduplicated(self, db, config, mock_feed_entry, run_id, interest):
         """Different URLs after normalization must both be inserted."""
         feed = MagicMock()
         feed.bozo = 0
@@ -690,7 +706,7 @@ class TestRunDeduplication:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 2
@@ -704,7 +720,7 @@ class TestRunDeduplication:
 class TestRunCutoff:
     """``run()`` filters entries by publication date based on cutoff."""
 
-    def test_no_previous_run_uses_24h_cutoff(self, db, config, run_id):
+    def test_no_previous_run_uses_24h_cutoff(self, db, config, run_id, interest):
         """When no previous successful run exists, a 24h cutoff must be used."""
         fixed_now = real_datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -738,21 +754,22 @@ class TestRunCutoff:
             mock_dt.timedelta = timedelta
             mock_dt.timezone = timezone
 
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
         assert articles[0]["title"] == "Recent Article"
 
-    def test_previous_run_uses_last_started_at(self, db, config, mock_feed_entry):
+    def test_previous_run_uses_last_started_at(self, db, config, mock_feed_entry, interest):
         """When a previous successful run exists, its ``started_at`` must be the cutoff."""
+        ai_id = db.get_interest_by_name("AI")["id"]
         # Create and complete a previous run
         prev_run_at = "2026-05-14T10:00:00"
-        prev_run_id = db.create_pipeline_run("2026-05-14", prev_run_at)
+        prev_run_id = db.create_pipeline_run(ai_id, "2026-05-14", prev_run_at)
         db.update_pipeline_run(prev_run_id, status="completed", completed_at="2026-05-14T10:30:00")
 
         # Current run
-        current_run_id = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        current_run_id = db.create_pipeline_run(ai_id, "2026-05-15", "2026-05-15T06:00:00")
 
         # Entry published before the previous run's started_at — should be skipped
         old_entry = dict(mock_feed_entry)
@@ -772,19 +789,20 @@ class TestRunCutoff:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(current_run_id, db, config)
+            run(current_run_id, db, config, interest)
 
         articles = db.get_articles_for_run(current_run_id)
         assert len(articles) == 1
         assert articles[0]["title"] == "New Article"
 
-    def test_entry_at_exact_cutoff_skipped(self, db, config, mock_feed_entry):
+    def test_entry_at_exact_cutoff_skipped(self, db, config, mock_feed_entry, interest):
         """An entry published at the exact cutoff time should be skipped (not > cutoff)."""
+        ai_id = db.get_interest_by_name("AI")["id"]
         prev_run_at = "2026-05-14T10:00:00"
-        prev_run_id = db.create_pipeline_run("2026-05-14", prev_run_at)
+        prev_run_id = db.create_pipeline_run(ai_id, "2026-05-14", prev_run_at)
         db.update_pipeline_run(prev_run_id, status="completed", completed_at="2026-05-14T10:30:00")
 
-        current_run_id = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        current_run_id = db.create_pipeline_run(ai_id, "2026-05-15", "2026-05-15T06:00:00")
 
         # Entry at exactly the cutoff time (10:00:00)
         entry = dict(mock_feed_entry)
@@ -797,12 +815,12 @@ class TestRunCutoff:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(current_run_id, db, config)
+            run(current_run_id, db, config, interest)
 
         articles = db.get_articles_for_run(current_run_id)
         assert len(articles) == 0
 
-    def test_entry_with_no_date_skipped(self, db, config, run_id):
+    def test_entry_with_no_date_skipped(self, db, config, run_id, interest):
         """An entry with no parsed date must be skipped (published is ``None``)."""
         entry = {
             "title": "No Date Article",
@@ -815,7 +833,7 @@ class TestRunCutoff:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 0
@@ -826,10 +844,11 @@ class TestRunCutoff:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunMalformedFeeds:
     """``run()`` handles malformed, empty, and failing feeds gracefully."""
 
-    def test_bozo_feed_with_no_entries_skipped(self, db, config, run_id):
+    def test_bozo_feed_with_no_entries_skipped(self, db, config, run_id, interest):
         """A bozo feed with zero entries must be skipped (logged, not inserted)."""
         feed = MagicMock()
         feed.bozo = 1
@@ -837,14 +856,14 @@ class TestRunMalformedFeeds:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article") as mock_extract:
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         # No articles should be inserted
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 0
         mock_extract.assert_not_called()
 
-    def test_bozo_feed_with_entries_still_processed(self, db, config, mock_feed_entry, run_id):
+    def test_bozo_feed_with_entries_still_processed(self, db, config, mock_feed_entry, run_id, interest):
         """A bozo feed that still has entries must be processed (bozo alone is not a skip)."""
         feed = MagicMock()
         feed.bozo = 1
@@ -852,12 +871,12 @@ class TestRunMalformedFeeds:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
 
-    def test_empty_feed_no_entries(self, db, config, run_id):
+    def test_empty_feed_no_entries(self, db, config, run_id, interest):
         """A feed with no entries must produce zero articles."""
         feed = MagicMock()
         feed.bozo = 0
@@ -865,19 +884,19 @@ class TestRunMalformedFeeds:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article") as mock_extract:
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 0
         mock_extract.assert_not_called()
 
-    def test_feed_parse_exception_skipped(self, db, config, run_id):
+    def test_feed_parse_exception_skipped(self, db, config, run_id, interest):
         """When ``feedparser.parse`` raises an exception, the feed must be skipped."""
         with patch(
             "src.scraper.feedparser.parse",
             side_effect=ConnectionError("network error"),
         ), patch("src.scraper._extract_article") as mock_extract:
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 0
@@ -889,10 +908,11 @@ class TestRunMalformedFeeds:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunEmptyUrl:
     """``run()`` skips entries whose URL is empty or normalizes to empty."""
 
-    def test_entry_with_empty_link_skipped(self, db, config, run_id):
+    def test_entry_with_empty_link_skipped(self, db, config, run_id, interest):
         """An entry with no ``link`` field must be skipped."""
         entry = {
             "title": "No Link",
@@ -905,7 +925,7 @@ class TestRunEmptyUrl:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article") as mock_extract:
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 0
@@ -917,10 +937,11 @@ class TestRunEmptyUrl:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunInsertFailure:
     """``run()`` handles a single article insertion failure without crashing."""
 
-    def test_insert_exception_continues(self, db, config, mock_feed_entry, run_id):
+    def test_insert_exception_continues(self, db, config, mock_feed_entry, run_id, interest):
         """If one article insert fails, remaining entries must still be processed."""
         entry_good = dict(mock_feed_entry)
         entry_good["link"] = "https://example.com/good"
@@ -943,7 +964,7 @@ class TestRunInsertFailure:
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")), \
              patch.object(db, "insert_article", side_effect=flaky_insert):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         # The good article should still be inserted
         articles = db.get_articles_for_run(run_id)
@@ -956,12 +977,14 @@ class TestRunInsertFailure:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("patch_datetime_now")
 class TestRunUrlNormalization:
     """``run()`` normalizes URLs before dedup check and storage."""
 
-    def test_url_normalized_before_dedup(self, db, config, mock_feed_entry, run_id):
+    def test_url_normalized_before_dedup(self, db, config, mock_feed_entry, run_id, interest):
         """URL must be normalized before checking ``article_exists``."""
-        feed_id = db.upsert_feed("https://example.com/ai-news", "AI News", "news")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        feed_id = db.upsert_feed(ai_id, "https://example.com/ai-news", "AI News", "news")
         db.insert_article(
             feed_id=feed_id,
             url="https://example.com/article",  # normalized form
@@ -982,14 +1005,14 @@ class TestRunUrlNormalization:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         # No new articles added (duplicate was skipped)
         articles = db.get_articles_for_run(run_id)
         assert len(articles) == 1
         assert articles[0]["title"] == "Existing"
 
-    def test_url_normalized_before_insert(self, db, config, mock_feed_entry, run_id):
+    def test_url_normalized_before_insert(self, db, config, mock_feed_entry, run_id, interest):
         """URL must be stored in its normalized form (without params/fragment)."""
         feed = MagicMock()
         feed.bozo = 0
@@ -997,7 +1020,7 @@ class TestRunUrlNormalization:
 
         with patch("src.scraper.feedparser.parse", return_value=feed), \
              patch("src.scraper._extract_article", return_value=("content", "full")):
-            run(run_id, db, config)
+            run(run_id, db, config, interest)
 
         articles = db.get_articles_for_run(run_id)
         stored_url = articles[0]["url"]

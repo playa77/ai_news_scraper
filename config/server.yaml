@@ -1,0 +1,12 @@
+# Web server configuration for AI News Pipeline
+# This file is auto-created on first startup with defaults.
+# Edit through the web UI at /global-config or directly here.
+
+# HTTPS listen port (default: 8443)
+port: 8443
+
+# Admin password for HTTP Basic Auth (set on first run via --admin-password flag)
+admin_password: ""
+
+# Directory for TLS certificates (self-signed, auto-generated on first run)
+cert_dir: "/opt/ai-news-pipeline"

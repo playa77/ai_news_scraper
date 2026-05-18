@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit: ' + interest.name if interest else 'New Interest' }} — AI News Pipeline{% endblock %}
+{% block content %}
+
+{% set is_new = interest is none or not interest %}
+
+<div class="page-header">
+    <h1 class="page-title">{{ 'New Interest' if is_new else 'Edit: ' + interest.name }}</h1>
+    <p class="page-subtitle">
+        {% if is_new %}
+            Set up a new AI news monitoring interest.
+        {% else %}
+            Configure deliverables, sources, and scheduling.
+        {% endif %}
+    </p>
+</div>
+
+{% if not is_new %}
+<form method="POST" action="/interest/{{ interest.id }}/edit">
+{% else %}
+<form method="POST" action="/interest/new">
+{% endif %}
+
+    {# ============================================================= #}
+    {#  SETTINGS                                                      #}
+    {# ============================================================= #}
+    <div class="card mb-2">
+        <h3 class="section-title">Settings</h3>
+        <div class="flex gap-2 flex-wrap" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="name">Name</label>
+                <input type="text" id="name" name="name" class="form-input"
+                       value="{{ interest.name if interest else '' }}"
+                       placeholder="e.g. US AI Policy"
+                       required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="start_time">Start Time</label>
+                <input type="text" id="start_time" name="start_time" class="form-input"
+                       value="{{ interest.start_time if interest else '04:00' }}"
+                       placeholder="HH:MM"
+                       pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]"
+                       title="Enter time in HH:MM format (24-hour)"
+                       required>
+                <span class="form-hint">Run at this time each day, in 24‑hour format.</span>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="interval_hours">Run Interval (hours)</label>
+                <input type="number" id="interval_hours" name="interval_hours" class="form-input"
+                       value="{{ interest.interval_hours if interest else 24 }}"
+                       min="1" max="168"
+                       required>
+                <span class="form-hint">Min 1, max 168. How often to scrape and generate.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ============================================================= #}
+    {#  DELIVERABLES                                                  #}
+    {# ============================================================= #}
+    <div class="card mb-2">
+        <h3 class="section-title">Deliverables</h3>
+        <p class="form-hint mb-2">Select which output types to generate for this interest.</p>
+        <div class="checkbox-group">
+            <label class="checkbox-label">
+                <input type="checkbox" name="enable_summary" value="1"
+                       {{ 'checked' if is_new or (interest and interest.enable_summary) else '' }}>
+                English Summary
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" name="enable_script_en" value="1"
+                       {{ 'checked' if is_new or (interest and interest.enable_script_en) else '' }}>
+                English Script
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" name="enable_script_de" value="1"
+                       {{ 'checked' if is_new or (interest and interest.enable_script_de) else '' }}>
+                German Script
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" name="enable_brief" value="1"
+                       {{ 'checked' if is_new or (interest and interest.enable_brief) else '' }}>
+                Daily Brief
+            </label>
+        </div>
+    </div>
+
+    {# ============================================================= #}
+    {#  INPUT DATA LENGTH                                             #}
+    {# ============================================================= #}
+    <div class="card mb-2">
+        <h3 class="section-title">Input Data Length</h3>
+        <p class="form-hint mb-2">How much article content to include for processing.</p>
+
+        {% set current_mode = interest.input_data_length_mode if interest and interest.input_data_length_mode else 'full_article' %}
+        <div class="radio-group mb-2">
+            {% for mode_value, mode_desc in length_modes %}
+            <label class="radio-label">
+                <input type="radio" name="input_data_length_mode" value="{{ mode_value }}"
+                       {{ 'checked' if current_mode == mode_value else '' }}>
+                {{ mode_desc }}
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="form-group" style="max-width: 300px;">
+            <label class="form-label" for="input_word_count">Word Count</label>
+            <input type="number" id="input_word_count" name="input_word_count" class="form-input"
+                   value="{{ interest.input_word_count if interest else 256 }}"
+                   min="1">
+            <span class="form-hint">Only used when <em>word_count</em> length mode is selected.</span>
+        </div>
+    </div>
+
+    {# ============================================================= #}
+    {#  OUTPUT WORD COUNTS                                            #}
+    {# ============================================================= #}
+    <div class="card mb-2">
+        <h3 class="section-title">Output Word Counts</h3>
+        <p class="form-hint mb-2">Target word counts for each generated deliverable.</p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="target_summary_words">Summary Target Words</label>
+                <input type="number" id="target_summary_words" name="target_summary_words" class="form-input"
+                       value="{{ interest.target_summary_words if interest else 750 }}"
+                       min="50" required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="target_script_en_words">English Script Target Words</label>
+                <input type="number" id="target_script_en_words" name="target_script_en_words" class="form-input"
+                       value="{{ interest.target_script_en_words if interest else 1250 }}"
+                       min="50" required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="target_script_de_words">German Script Target Words</label>
+                <input type="number" id="target_script_de_words" name="target_script_de_words" class="form-input"
+                       value="{{ interest.target_script_de_words if interest else 1250 }}"
+                       min="50" required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label" for="target_brief_words">Daily Brief Target Words</label>
+                <input type="number" id="target_brief_words" name="target_brief_words" class="form-input"
+                       value="{{ interest.target_brief_words if interest else 700 }}"
+                       min="50" required>
+            </div>
+        </div>
+    </div>
+
+    {# ============================================================= #}
+    {#  SAVE                                                          #}
+    {# ============================================================= #}
+    <button type="submit" class="btn btn-primary" style="padding: 0.65rem 2rem; font-size: 0.95rem;">
+        {{ 'Create Interest' if is_new else 'Save Changes' }}
+    </button>
+</form>
+
+{# ============================================================= #}
+{#  FEEDS (edit mode only)                                        #}
+{# ============================================================= #}
+{% if not is_new %}
+<div class="mt-3">
+    <h2 class="section-title">Feeds</h2>
+    <p class="section-subtitle">RSS/Atom feeds {{ interest.name }} monitors.</p>
+
+    {% if feeds %}
+    <div class="card mb-2 table-wrap" style="padding: 0; overflow: hidden;">
+        <table class="feed-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>URL</th>
+                    <th>Category</th>
+                    <th style="width: 100px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for feed in feeds %}
+                <tr>
+                    <td style="font-weight: 600;">{{ feed.name }}</td>
+                    <td style="font-size: 0.8rem; font-family: var(--font-mono); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ feed.url }}">{{ feed.url }}</td>
+                    <td><span class="badge {{ 'badge-accent' if feed.category == 'news' else 'badge-blue' }}">{{ feed.category }}</span></td>
+                    <td>
+                        <div class="feed-actions">
+                            <a href="/interest/{{ interest.id }}/feed/{{ feed.id }}/edit" class="btn btn-secondary btn-xs">Edit</a>
+                            <form method="POST" action="/interest/{{ interest.id }}/feed/{{ feed.id }}/delete" class="inline-form" onsubmit="return confirm('Remove feed \u201c{{ feed.name|e }}\u201d?');">
+                                <button type="submit" class="btn btn-danger btn-xs">Del</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="card mb-2" style="text-align: center; padding: 2rem;">
+        <p style="color: var(--text-muted);">No feeds configured yet.</p>
+    </div>
+    {% endif %}
+
+    {# Add Feed form #}
+    <div class="card">
+        <h4 style="font-size: 0.95rem; font-weight: 700; margin-bottom: 1rem; color: var(--text-primary);">Add Feed</h4>
+        <form method="POST" action="/interest/{{ interest.id }}/feed/add">
+            <div style="display: grid; grid-template-columns: 1fr 2fr 1fr auto; gap: 0.75rem; align-items: end;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label" for="feed_name">Name</label>
+                    <input type="text" id="feed_name" name="name" class="form-input" placeholder="e.g. TechCrunch AI" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label" for="feed_url">URL</label>
+                    <input type="url" id="feed_url" name="url" class="form-input" placeholder="https://example.com/feed.xml" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label" for="feed_category">Category</label>
+                    <select id="feed_category" name="category" class="form-select">
+                        <option value="news">News</option>
+                        <option value="commentator">Commentator</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <button type="submit" class="btn btn-primary" style="height: 38px;">Add Feed</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+</div>
+
+{% endif %}
+
+{% endblock %}

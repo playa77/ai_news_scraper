@@ -1,37 +1,42 @@
 # AI News Pipeline
 
-Every night at 4 AM, this pipeline scrapes ~50 AI-focused news sites and blogs, finds the 1–5 biggest themes of the day, and emails you a polished daily brief along with YouTube-ready scripts (in English and German). It runs unattended on a cheap Ubuntu VPS.
+A persistent multi-interest news pipeline that scrapes ~50 AI-focused sites and blogs, finds the biggest themes of the day, and generates polished summaries, scripts, and a daily brief — all managed through a web UI. Runs unattended on a cheap Ubuntu VPS.
 
 **Cool, but why?**
 
-Because keeping up with AI news is impossible. Dozens of sites publish every day, and most of it is noise. This pipeline does the reading for you, picks out what actually matters, and hands you a finished summary — plus scripts you can literally read off a teleprompter if you run a YouTube channel.
+Because keeping up with AI news is impossible. Dozens of sites publish every day, and most of it is noise. This pipeline does the reading for you, picks out what actually matters, and hands you a finished summary — plus scripts you can literally read off a teleprompter if you run a YouTube channel. You can run multiple independent "interests" (e.g. AI news, climate tech, crypto) from the same instance, each with its own schedule, feeds, and output settings.
 
 ---
 
 ## How It Works (90 Seconds)
 
+The pipeline runs as a **persistent background service** — a Flask web server with an in-process APScheduler. You configure everything through the web UI (or YAML files), and the scheduler kicks off pipeline runs per interest at their scheduled times.
+
 ```
-Your VPS wakes up at 04:00 Berlin time
+Your VPS runs a persistent daemon (systemd Type=simple, Restart=always)
     │
-    ├─ Scrapes ~50 RSS feeds, pulls full article text
+    ├─ Flask HTTPS web server on port 8443 for admin (dashboard, CRUD interests, edit config)
     │
-    ├─ Compares today's articles against yesterday's brief
-    │   to find genuinely new themes (not "AI is changing everything" — again)
+    ├─ APScheduler manages per-interest schedules
+    │   (e.g. "AI News" at 04:00 daily, "Crypto" at 05:00 daily)
     │
-    ├─ For each theme found, generates three deliverables:
-    │   • ~750-word English summary
-    │   • ~1000–1500-word English YouTube script
-    │   • Natively-written German YouTube script
+    ├─ When a scheduled run triggers for an interest:
+    │   ├─ Scrapes that interest's RSS feeds, pulls full article text
+    │   ├─ Compares today's articles against yesterday's brief
+    │   │   to find genuinely new themes (not "AI is changing everything" — again)
+    │   ├─ For each theme found, generates up to three deliverables:
+    │   │   • English summary
+    │   │   • English YouTube script
+    │   │   • Natively-written German YouTube script
+    │   ├─ Runs each deliverable through quality checks and
+    │   │   adversarial fact-checking, refining up to 3 times
+    │   ├─ Writes a daily brief tying all themes together
+    │   └─ Emails everything to you via Gmail
     │
-    ├─ Runs each deliverable through quality checks and
-    │   adversarial fact-checking, refining up to 3 times
-    │
-    ├─ Writes a ~700-word daily brief tying all themes together
-    │
-    └─ Emails everything to you via Gmail. Done.
+    └─ If anything breaks, you get an alert email with exactly what failed and why.
 ```
 
-If anything breaks, you get an alert email with exactly what failed and why.
+At any time you can log into the web UI and click "Run Now" on any interest to trigger an immediate pipeline run.
 
 ---
 
@@ -45,7 +50,7 @@ You need a Linux server (or an old laptop running Linux) with:
 | Python | 3.12 or newer | Comes with Ubuntu 24.04 by default |
 | Disk | ~2 GB free | Database grows about 5 MB per day |
 | Network | Outbound internet | To reach RSS feeds, OpenRouter API, and Gmail SMTP |
-| Inbound ports | None | No firewall holes needed |
+| Inbound ports | **8443** (HTTPS) | So you can reach the web admin UI from your browser |
 
 You also need accounts on these services:
 
@@ -85,13 +90,21 @@ GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
 - **OpenRouter API key:** Sign up at [openrouter.ai](https://openrouter.ai/), go to Settings → Keys, create a key, and add credits.
 - **Gmail App Password:** Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). You must have 2-Step Verification enabled first. Google will give you a 16-character password — use that, not your normal Gmail password. This is way safer because the app password can only send email, not read your inbox or change settings.
 
-### Step 3: Run the installer
+### Step 3: Set an admin password for the web UI
+
+Edit `config/server.yaml` and set a password for the web admin dashboard:
+
+```yaml
+admin_password: "your-secure-password-here"
+```
+
+### Step 4: Run the installer
 
 ```bash
 sudo bash deploy/install.sh
 ```
 
-The installer does everything: creates a locked-down system user, sets up a Python virtual environment, copies files into `/opt/ai-news-pipeline/`, and schedules the daily run. You'll see output like:
+The installer does everything: creates a locked-down system user, sets up a Python virtual environment, copies files into `/opt/ai-news-pipeline/`, and starts the persistent service. You'll see output like:
 
 ```
 === AI News Pipeline Installation ===
@@ -101,23 +114,21 @@ The installer does everything: creates a locked-down system user, sets up a Pyth
 [4/8] Copying project files...
 [5/8] Creating Python virtual environment...
 [6/8] Creating .env file from template...
-[7/8] Installing systemd units and logrotate config...
-[8/8] Enabling and starting systemd timer...
+[7/8] Installing systemd service and logrotate config...
+[8/8] Enabling and starting the persistent service...
 
 === Installation complete ===
 ```
 
-### Step 4: Verify it works
+### Step 5: Verify it works
 
 ```bash
-sudo systemctl status ai-news-pipeline.timer
+sudo systemctl status ai-news-pipeline.service
 ```
 
-You should see `Active: active (waiting)` and the next trigger time. If you want to run it right now instead of waiting for 4 AM:
+You should see `Active: active (running)`. The web UI is now available at `https://your-server-ip:8443` — your browser will warn about a self-signed certificate (that's expected, see "Self-signed certs" below).
 
-```bash
-sudo systemctl start ai-news-pipeline.service
-```
+Navigate there, log in with the admin password you set, and you'll see the dashboard.
 
 ---
 
@@ -153,34 +164,27 @@ deactivate
 
 The pipeline doesn't bother with `activate`/`deactivate` — it just calls the Python binary directly by its full path: `/opt/ai-news-pipeline/venv/bin/python`.
 
-### What's systemd and why a timer?
+### What's systemd and why a persistent service instead of a timer?
 
-**systemd** is the thing that starts and stops programs on Linux. On Ubuntu, it runs as PID 1 (the first process, the one that launches everything else). It can:
+The old version of this pipeline used a systemd timer (like cron) to run a oneshot job at 4 AM. The new version instead runs a **persistent service** that stays alive 24/7.
 
-- Start a program when the server boots
-- Restart a program if it crashes
-- Run a program on a schedule
+**systemd** is the thing that starts and stops programs on Linux. On Ubuntu, it runs as PID 1 (the first process, the one that launches everything else).
 
-A **systemd service** defines *what* to run (our pipeline). A **systemd timer** defines *when* (every day at 04:00 Europe/Berlin).
+Why persistent instead of timer-driven?
 
-Our service is `Type=oneshot`, meaning it runs once and exits — like a cron job, but with better logging and failure handling.
+- **Multi-interest scheduling**: APScheduler (an in-process Python scheduler) manages multiple interests with different schedules. You might have "AI News" at 4 AM and "Crypto" at 6 AM — APScheduler handles that natively.
+- **Web UI**: A Flask server runs inside the same process, giving you a dashboard to add/remove interests, edit feeds, and trigger runs manually.
+- **Self-healing**: With `Restart=always`, if the process crashes, systemd brings it back within 10 seconds. APScheduler re-evaluates missed runs on restart.
 
-### Why not cron?
+The service type is `Type=simple` (standard for daemons) with `Restart=always` and a 10-second restart delay. It's not `Type=oneshot` because it never exits intentionally.
 
-Cron is fine, but systemd gives us:
+### Self-signed certs and the browser warning
 
-- Logs that go to journald (viewable with `journalctl`)
-- Automatic retry detection via `Persistent=true` on the timer (if the server was off at 4 AM, the job runs as soon as it boots)
-- Clean environment variable handling via `EnvironmentFile`
+The web UI runs over HTTPS on port 8443. Since you probably don't have a real TLS certificate for your VPS, the pipeline auto-generates a **self-signed certificate** on first startup.
 
-### Do I need `loginctl enable-linger`?
+Your browser will show a "Your connection is not private" warning. This is expected and safe — you're connecting to your own server. Click "Advanced" → "Proceed to site" (Chrome) or "Accept the Risk and Continue" (Firefox).
 
-**No — not for this project.** A quick explainer so you know why:
-
-- **System services** live in `/etc/systemd/system/`. systemd itself manages them. Even though our service runs as the user `ai-news-pipeline`, it's still a system service — the `User=` directive just says "run this process as that user."
-- **User services** live in `~/.config/systemd/user/`. These are tied to a user session, and they die when the user logs out — unless you run `loginctl enable-linger <username>`, which tells systemd to keep the user's service manager alive even when they're not logged in.
-
-Since our service is installed at `/etc/systemd/system/ai-news-pipeline.service`, it's a system service. No linger needed.
+The cert is stored at `/opt/ai-news-pipeline/cert.pem` and `/opt/ai-news-pipeline/key.pem`. It's valid for 10 years and auto-generated if missing.
 
 ### Terminal multiplexers: tmux and screen
 
@@ -189,13 +193,12 @@ If you're managing a server over SSH, your connection can drop. When it does, an
 - **tmux** (recommended): Install with `sudo apt install tmux`. Start a session with `tmux new -s mysession`, detach with `Ctrl+B then D`, reattach with `tmux attach -t mysession`.
 - **screen**: The older alternative. `screen -S mysession`, detach with `Ctrl+A then D`, reattach with `screen -r mysession`.
 
-For this project specifically, you probably don't need a multiplexer day-to-day because the pipeline runs via systemd — not from your terminal. But tmux is useful when you're debugging: start a tmux session, run `journalctl -u ai-news-pipeline.service -f` to tail the logs, detach, and come back later to see what happened.
+For this project specifically, you probably don't need a multiplexer day-to-day because the pipeline runs as a systemd service — not from your terminal. But tmux is useful when you're debugging:
 
 ```bash
-# Quick tmux workflow for monitoring a pipeline run
+# Quick tmux workflow for monitoring the pipeline
 tmux new -s pipeline-watch
-sudo systemctl start ai-news-pipeline.service
-journalctl -u ai-news-pipeline.service -f
+sudo journalctl -u ai-news-pipeline.service -f
 # Ctrl+B, D to detach. Come back later:
 tmux attach -t pipeline-watch
 ```
@@ -208,14 +211,17 @@ All configuration lives in `/opt/ai-news-pipeline/config/` as separate, domain-s
 
 | File | Purpose |
 |------|---------|
-| `feeds.yaml` | RSS/Atom feed sources to scrape |
+| `feeds.yaml` | Default RSS/Atom feed sources (used as template for new interests) |
 | `models.yaml` | LLM model assignments (strong vs weak) |
-| `pipeline.yaml` | Runtime behavior (retries, timeouts, schedule) |
+| `pipeline.yaml` | Runtime behavior (retries, timeouts, max themes) |
 | `email.yaml` | SMTP settings for delivering the digest |
 | `database.yaml` | SQLite database path |
 | `openrouter.yaml` | OpenRouter API connection |
+| `server.yaml` | Web server port, admin password, cert directory |
 
-### `feeds` — What sources to scrape
+**Important:** In v2, feeds are managed **per-interest** through the web UI (stored in the database), not globally in `feeds.yaml`. The `feeds.yaml` file serves as a starting template for new interests you create.
+
+### `feeds` — Default feed template
 
 ```yaml
 feeds:
@@ -238,7 +244,7 @@ feeds:
 
 The pipeline treats `news` and `commentators` identically in scraping — the distinction is for the analyzer, which may weight commentary for "what are smart people talking about" vs. news for "what happened."
 
-To add a feed, just add another entry under the right category. To remove one, delete its block. No restart needed — feeds are read at the start of each run.
+To add or remove feeds, use the web UI (navigate to an interest and edit its feeds). Changes take effect on the next scheduled run.
 
 **Finding RSS feeds:** Many sites hide their feed links. Try appending `/feed`, `/rss`, or `/atom.xml` to the domain. You can also right-click → View Page Source and search for `application/rss+xml`. Browser extensions like "RSS Feed Reader" can auto-detect feeds on any page.
 
@@ -267,24 +273,26 @@ models:
 
 ```yaml
 pipeline:
-  schedule: "04:00"                    # HH:MM, 24-hour format
+  schedule: "04:00"                    # HH:MM, 24-hour format (default for new interests)
   timezone: "Europe/Berlin"
   max_retries: 2                       # Retry each stage up to 2 extra times
   max_refinement_rounds: 3             # How many rounds of "fix this"
   retry_backoff_seconds: 30            # Wait between retries
   article_fetch_timeout_seconds: 15    # Max wait per article fetch
   llm_request_timeout_seconds: 120     # Max wait per LLM API call
+  max_themes: 10                       # Max themes per run
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `schedule` | What time the timer triggers. Note: this is informational — the actual schedule is in the systemd timer file (`OnCalendar=*-*-* 04:00 Europe/Berlin`). Changing it here doesn't change when the pipeline runs; you'd also need to edit the timer. |
-| `timezone` | Timezone for log timestamps. |
+| `schedule` | Default start time for new interests. Each interest can have its own schedule set via the web UI. |
+| `timezone` | Timezone for scheduling and log timestamps. |
 | `max_retries` | Extra attempts per stage. With `max_retries: 2`, each stage gets up to 3 total attempts (1 initial + 2 retries). |
 | `max_refinement_rounds` | After generating a deliverable, the evaluator checks quality. If it fails, the generator gets another shot with feedback. This controls how many times that cycle repeats before auto-approving. More rounds = higher quality but more API cost. |
 | `retry_backoff_seconds` | How long to wait before retrying a failed stage. |
 | `article_fetch_timeout_seconds` | Some sites are slow. This is the max time to wait for one article before giving up on it. |
 | `llm_request_timeout_seconds` | Max wait for an OpenRouter API response. 120s is generous — DeepSeek usually responds in 5–15s. Bump this up if you switch to a slower model. |
+| `max_themes` | Maximum number of themes the analyzer will identify per run. |
 
 ### `email` — How to send the digest
 
@@ -311,7 +319,7 @@ email:
 
 ```yaml
 database:
-  path: "pipeline.db"                  # Relative to the --config directory
+  path: "pipeline.db"                  # Relative to --config directory
 ```
 
 The database uses SQLite with WAL mode (Write-Ahead Logging), which means the analyzer can read while the scraper writes — no locking issues. At ~5 MB/day growth, a 240 GB SSD lasts about 130 years before this becomes a storage problem.
@@ -330,6 +338,47 @@ openrouter:
 |-------|---------|
 | `api_key_env` | The environment variable name that holds your OpenRouter key. Set in `.env`. |
 | `base_url` | The API endpoint. OpenRouter is OpenAI-compatible, so this follows the standard `/chat/completions` path. |
+
+### `server` — Web admin UI
+
+```yaml
+server:
+  port: 8443
+  admin_password: "your-password-here"
+  cert_dir: "/opt/ai-news-pipeline"
+```
+
+| Field | Meaning |
+|-------|---------|
+| `port` | HTTPS port for the admin web UI. Default: 8443. |
+| `admin_password` | Password for HTTP Basic Auth. Required to access the dashboard. |
+| `cert_dir` | Directory where the self-signed TLS certificate (`cert.pem` + `key.pem`) is stored or auto-generated. |
+
+---
+
+## Multi-Interest Architecture
+
+This is the biggest change from v1. Instead of one hardcoded pipeline run, you can now manage **multiple independent "interests"** — each with its own:
+
+- **Name** (e.g. "AI News", "Climate Tech", "Crypto")
+- **Schedule** (start time + interval — e.g. every 24 hours at 04:00, or every 12 hours)
+- **Feed list** (which RSS/Atom feeds to scrape)
+- **Deliverable toggles** (which outputs to generate: summary, English script, German script)
+- **Word count targets** (how long each deliverable should be)
+- **Data-length mode** (full article, truncated to word count, or headers only)
+
+### Managing interests through the web UI
+
+Navigate to `https://your-server:8443` and log in. The dashboard shows all your interests, their status, next run time, and a "Run Now" button for each.
+
+- **Create**: Click "New Interest", give it a name, set the schedule, select which deliverables to generate.
+- **Edit**: Click an interest to change its settings, add/remove feeds, or adjust word counts.
+- **Delete**: Remove an interest entirely (does not delete the generated content — that stays in the database).
+- **Run Now**: Trigger an immediate pipeline run for a specific interest, regardless of schedule.
+
+### Global config
+
+The "Global Configuration" page in the web UI lets you edit `pipeline.yaml`, `models.yaml`, `email.yaml`, `database.yaml`, and `openrouter.yaml` without SSH-ing into your server.
 
 ---
 
@@ -357,48 +406,42 @@ The installer does this automatically.
 
 **Why App Passwords instead of your real Gmail password?** App Passwords are scoped — they can send email but can't read your inbox, change your password, or delete your account. If the pipeline has a bug that leaks credentials (theoretically), the damage is contained. Also, if you use 2FA (you should), your real password won't work for SMTP anyway.
 
+**Why self-signed HTTPS instead of plain HTTP?** Even on a private VPS, sending passwords over plain HTTP is a bad habit. The self-signed cert encrypts your connection. The browser warning is cosmetic — the encryption is real.
+
 ---
 
 ## Daily Operations
 
-### Checking if it ran last night
+### Checking if the pipeline is running
 
 ```bash
-# See timer status and next run time
-sudo systemctl status ai-news-pipeline.timer
-
-# See when it last triggered
-sudo systemctl list-timers ai-news-pipeline.timer
-
-# Read the last run's log
-sudo journalctl -u ai-news-pipeline.service --since "yesterday" --no-pager
+sudo systemctl status ai-news-pipeline.service
 ```
 
-### Running it manually (right now)
+This shows whether the persistent daemon is alive. For scheduled runs, check the dashboard at `https://your-server:8443`.
 
-```bash
-sudo systemctl start ai-news-pipeline.service
-```
+### Running an interest manually (right now)
 
-Watch the logs live in another terminal (or tmux pane):
-
-```bash
-sudo journalctl -u ai-news-pipeline.service -f
-```
-
-### Running it without systemd (for debugging)
+Either:
+- Log into the web UI and click "Run Now" on the interest, OR
+- SSH in and trigger via the old oneshot runner:
 
 ```bash
 sudo -u ai-news-pipeline /opt/ai-news-pipeline/venv/bin/python \
-  /opt/ai-news-pipeline/src/main.py \
+  /opt/ai-news-pipeline/src/main_old.py \
   --config /opt/ai-news-pipeline/config/
 ```
 
-### Viewing the persistent log file
-
-In addition to journald, the pipeline writes structured JSON logs to `/opt/ai-news-pipeline/logs/pipeline.log`:
+### Viewing logs
 
 ```bash
+# Live tail of all pipeline output
+sudo journalctl -u ai-news-pipeline.service -f
+
+# Last 100 lines
+sudo journalctl -u ai-news-pipeline.service -n 100 --no-pager
+
+# Structured JSON log file
 tail -f /opt/ai-news-pipeline/logs/pipeline.log
 ```
 
@@ -409,10 +452,6 @@ cd /opt/ai-news-pipeline
 sudo -u ai-news-pipeline /opt/ai-news-pipeline/venv/bin/python -m pytest tests/ -v --tb=short
 ```
 
-### Adding or removing feeds
-
-Edit `/opt/ai-news-pipeline/config/feeds.yaml`. Changes take effect on the next run — no restart or reload needed.
-
 ### Updating the pipeline code
 
 ```bash
@@ -422,29 +461,61 @@ git pull
 # Copy updated files
 sudo -u ai-news-pipeline cp -r src/ /opt/ai-news-pipeline/src/
 sudo -u ai-news-pipeline cp -r prompts/ /opt/ai-news-pipeline/prompts/
+sudo -u ai-news-pipeline cp -r templates/ /opt/ai-news-pipeline/templates/
 
 # If requirements.txt changed
 sudo -u ai-news-pipeline /opt/ai-news-pipeline/venv/bin/pip install -r /opt/ai-news-pipeline/requirements.txt
 
 # If the database schema changed (rare)
 sudo -u ai-news-pipeline /opt/ai-news-pipeline/venv/bin/python \
-  /opt/ai-news-pipeline/src/main.py --init-db --config /opt/ai-news-pipeline/config/
+  /opt/ai-news-pipeline/src/main_old.py --init-db --config /opt/ai-news-pipeline/config/
+
+# Restart the service to pick up code changes
+sudo systemctl restart ai-news-pipeline.service
 ```
+
+### Adding a new interest
+
+The easiest way is through the web UI — click "New Interest" on the dashboard. If you prefer the CLI:
+
+```bash
+sqlite3 /opt/ai-news-pipeline/data/pipeline.db "INSERT INTO interests ..."
+# Then restart the scheduler from the web UI, or restart the service:
+sudo systemctl restart ai-news-pipeline.service
+```
+
+### Changing an interest's schedule
+
+Edit the interest through the web UI (click "Edit" next to it). The scheduler picks up changes immediately — no restart needed.
 
 ---
 
 ## Troubleshooting
 
-### "Timer is active but nothing happens at 4 AM"
+### "Service is active but no runs are happening"
 
-1. Check if the server was even on: `uptime`
-2. systemd's `Persistent=true` means it should catch up, but verify: `sudo systemctl list-timers ai-news-pipeline.timer`
-3. Try running manually: `sudo systemctl start ai-news-pipeline.service`
-4. Check the logs: `sudo journalctl -u ai-news-pipeline.service -n 100 --no-pager`
+1. Check the web UI dashboard: are there any interests configured? Do they have feeds?
+2. Check the logs: `sudo journalctl -u ai-news-pipeline.service -n 100 --no-pager`
+3. Look for scheduler messages about missed catch-up runs
+4. Click "Run Now" on an interest in the web UI to force a run
+
+### "Browser says connection is not private"
+
+This is the self-signed certificate. Click "Advanced" → "Proceed to site" (Chrome) or "Accept the Risk and Continue" (Firefox). This is expected and safe for your own server.
+
+### "Can't log into the web UI" / 401 Unauthorized
+
+You didn't set the admin password in `config/server.yaml`, or it was auto-generated. Check:
+
+```bash
+sudo cat /opt/ai-news-pipeline/config/server.yaml | grep admin_password
+```
+
+Set a new password there, then restart the service: `sudo systemctl restart ai-news-pipeline.service`.
 
 ### "Connection refused" or HTTP errors during scraping
 
-Some feeds block datacenter IPs or require a User-Agent. If a specific feed consistently fails, try removing it from `feeds.yaml` and checking if the URL is still valid in a browser.
+Some feeds block datacenter IPs or require a User-Agent. If a specific feed consistently fails, try removing it from that interest's feed list via the web UI and checking if the URL is still valid in a browser.
 
 ### "OpenRouter API error: 401 Unauthorized"
 
@@ -465,23 +536,9 @@ The venv wasn't created or packages weren't installed. Re-run:
 sudo -u ai-news-pipeline /opt/ai-news-pipeline/venv/bin/pip install -r /opt/ai-news-pipeline/requirements.txt
 ```
 
-### Changing the schedule
+### Restarting after a crash or reboot
 
-The schedule lives in the systemd timer, not in the config files. Edit `/etc/systemd/system/ai-news-pipeline.timer`:
-
-```ini
-[Timer]
-OnCalendar=*-*-* 06:30 Europe/Berlin   # Change the time here
-Persistent=true
-```
-
-Then reload:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart ai-news-pipeline.timer
-```
-
-`OnCalendar` format is `DayOfWeek Year-Month-Day Hour:Minute:Second Timezone`. `*-*-*` means "every day." See `man systemd.timer` for the full spec.
+The service has `Restart=always` and auto-starts on boot. If the process crashes, systemd restarts it within 10 seconds. APScheduler re-evaluates missed runs and catches up automatically.
 
 ---
 
@@ -493,17 +550,22 @@ Everything the pipeline needs lives under `/opt/ai-news-pipeline/`:
 /opt/ai-news-pipeline/
 ├── .env                            # API keys (secret — chmod 600)
 ├── requirements.txt                # Pinned Python dependencies
+├── cert.pem                        # Self-signed TLS certificate (auto-generated)
+├── key.pem                         # Private key for TLS (auto-generated)
 ├── config/
-│   ├── feeds.yaml                  # News and commentator feed sources
+│   ├── feeds.yaml                  # Default feed template for new interests
 │   ├── models.yaml                 # LLM model assignments
 │   ├── pipeline.yaml               # Runtime behavior and thresholds
 │   ├── email.yaml                  # SMTP delivery settings
 │   ├── database.yaml               # SQLite database path
-│   └── openrouter.yaml             # OpenRouter API connection
+│   ├── openrouter.yaml             # OpenRouter API connection
+│   └── server.yaml                 # Web UI port, admin password, cert dir
 ├── src/
-│   ├── main.py                     # Entry point: parses args, runs the show
-│   ├── config.py                   # Reads & validates config files
-│   ├── db.py                       # SQLite database layer (7 tables)
+│   ├── main.py                     # Entry point: persistent server + scheduler
+│   ├── main_old.py                 # Legacy entry point: oneshot batch mode
+│   ├── pipeline.py                 # Orchestrator: per-interest pipeline execution
+│   ├── config.py                   # Reads & validates YAML config files
+│   ├── db.py                       # SQLite database layer (8 tables + auto-migration)
 │   ├── scraper.py                  # RSS parsing + article text extraction
 │   ├── analyzer.py                 # Theme identification via LLM
 │   ├── generator.py                # Summary + script generation
@@ -511,6 +573,9 @@ Everything the pipeline needs lives under `/opt/ai-news-pipeline/`:
 │   ├── brief.py                    # Daily brief synthesis
 │   ├── emailer.py                  # SMTP dispatch (Gmail)
 │   ├── llm.py                      # OpenRouter HTTP client
+│   ├── scheduler.py                # APScheduler wrapper for multi-interest timing
+│   ├── server.py                   # Flask HTTPS web admin UI
+│   ├── certs.py                    # Self-signed TLS certificate generator
 │   └── models.py                   # Data models (Pydantic)
 ├── prompts/                        # LLM prompt templates (plain text)
 │   ├── analyze.txt
@@ -521,13 +586,19 @@ Everything the pipeline needs lives under `/opt/ai-news-pipeline/`:
 │   ├── evaluate_adversarial.txt
 │   ├── refine.txt
 │   └── brief.txt
+├── templates/                      # Flask HTML templates for the web UI
+│   ├── base.html
+│   ├── dashboard.html
+│   ├── interest_editor.html
+│   └── global_config.html
 ├── tests/
 │   ├── test_*.py                   # Unit + integration tests
 │   └── fixtures/                   # Sample data for tests
 ├── deploy/
 │   ├── install.sh                  # One-shot installer
-│   ├── ai-news-pipeline.service    # systemd service definition
-│   ├── ai-news-pipeline.timer      # systemd timer definition
+│   ├── ai-news-pipeline.service    # systemd service definition (persistent)
+│   ├── fresh_deploy.sh             # Remote deploy via Paramiko
+│   ├── monitor.sh                  # Remote monitoring script
 │   └── logrotate.conf              # Log rotation rules
 ├── venv/                           # Python virtual environment (auto-created)
 ├── data/
@@ -542,28 +613,46 @@ Everything the pipeline needs lives under `/opt/ai-news-pipeline/`:
 
 ### Design decisions
 
-- **Sequential stages** instead of parallel: simpler error handling, no rate-limit contention on the LLM API, and the scraper + analyzer only take ~2 minutes of the ~10-minute total runtime.
-- **Each stage retried 3 times** (1 attempt + 2 retries) with 30-second backoff: handles transient failures without getting stuck.
+- **Persistent server + in-process scheduler** instead of systemd timer: enables multi-interest scheduling, web UI, and automatic catch-up on missed runs.
+- **Sequential stages within a run** instead of parallel: simpler error handling, no rate-limit contention on the LLM API, and the scraper + analyzer only take ~2 minutes of the ~10-minute total runtime.
+- **Per-theme parallelism:** deliverables for different themes are generated concurrently (ThreadPoolExecutor, 3 workers), and English + German scripts within a theme are generated in parallel.
+- **Each stage retried up to 3 times** (1 attempt + 2 retries) with 30-second backoff: handles transient failures without getting stuck.
 - **Deliverables refined up to 3 rounds, then auto-approved:** the evaluator isn't perfect, and an imperfect deliverable is better than no deliverable.
 - **Two-model strategy (strong + weak):** writing needs quality, evaluation needs speed and cheapness. You can override this to use one model for both.
 - **SQLite with WAL mode:** concurrent reads during writes, zero setup, negligible maintenance.
 - **Secrets only in environment variables:** nothing sensitive in config files, nothing sensitive in git.
-- **Failure alert email** includes the stage name, error traceback, and recent log lines: enough context to debug without logging into the server.
+- **Self-signed TLS for the admin UI:** encrypted connections without the hassle of Let's Encrypt for a private dashboard.
+- **Multi-interest design:** each interest is an independent pipeline configuration with its own feeds, schedule, and output settings — all stored in the database.
+- **Database auto-migration:** upgrades from v1 (single-interest) to v2 (multi-interest) schema automatically on first run.
 
-### Pipeline stages in order
+### Pipeline stages in order (per interest)
 
 | Stage | File | What happens | Retryable |
 |-------|------|-------------|-----------|
-| Init | `main.py` | Parse config, init DB, load previous brief | Yes |
-| Scrape | `scraper.py` | Fetch all feeds, extract full article text | Yes |
-| Analyze | `analyzer.py` | Find 1–5 themes, classify as novel or continuation | Yes |
-| Generate+Eval | `generator.py` + `evaluator.py` | For each theme: generate 3 deliverables, evaluate, refine up to 3 rounds | Yes |
+| Init | `pipeline.py` | Parse config, load DB, recover orphaned articles, load previous brief | Yes |
+| Scrape | `scraper.py` | Fetch all feeds for this interest, extract full article text | Yes |
+| Analyze | `analyzer.py` | Find 1–10 themes, classify as novel or continuation | Yes |
+| Generate+Eval | `generator.py` + `evaluator.py` | For each theme: generate up to 3 deliverables, evaluate, refine up to 3 rounds. Themes processed concurrently. | Yes |
 | Brief | `brief.py` | Synthesize a daily brief from approved themes | Yes |
 | Email | `emailer.py` | Send one email per theme + one daily brief email | Yes |
 
 ### Email format
 
-You receive one email per discovered theme (each containing the summary, English script, and German script), plus one "daily brief" email that stitches all themes together. On failure, you get one alert email.
+You receive one email per discovered theme (each containing the summary, English script, and German script), plus one "daily brief" email that stitches all themes together. On failure, you get one alert email with the stage name, error traceback, and recent log lines — enough context to debug without logging into the server.
+
+### Web UI routes
+
+| Route | Method | Auth | Description |
+|-------|--------|------|-------------|
+| `/` | GET | Yes | Dashboard with all interests, status, next run times |
+| `/interest/new` | GET/POST | Yes | Create a new interest |
+| `/interest/<id>/edit` | GET/POST | Yes | Edit an interest + manage its feeds |
+| `/interest/<id>/delete` | POST | Yes | Delete an interest |
+| `/interest/<id>/run` | POST | Yes | Trigger immediate pipeline run |
+| `/global-config` | GET/POST | Yes | Edit pipeline, models, email, database, openrouter config |
+| `/interest/<id>/feed/add` | POST | Yes | Add a feed to an interest |
+| `/interest/<id>/feed/<fid>/edit` | POST | Yes | Edit a feed |
+| `/interest/<id>/feed/<fid>/delete` | POST | Yes | Delete a feed |
 
 ---
 
@@ -572,11 +661,13 @@ You receive one email per discovered theme (each containing the summary, English
 | Item | Cost |
 |------|------|
 | VPS (1 vCPU, 1 GB RAM) | ~$5/month |
-| OpenRouter API credits | ~$15–30/month (with DeepSeek models) |
+| OpenRouter API credits | ~$15–30/month (with DeepSeek models, one interest per day) |
 | Gmail | Free (within sending limits) |
 | **Total** | **~$20–35/month** |
 
 You can cut costs by switching both models to an even cheaper option (like `meta-llama/llama-3.2-3b-instruct` for the weak model) or by reducing `max_refinement_rounds` to 1. Quality will drop, but the pipeline will still work.
+
+Running multiple interests adds cost proportionally — each additional interest doubles the LLM spend (or more, if it runs as frequently).
 
 ---
 

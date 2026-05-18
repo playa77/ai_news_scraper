@@ -1,7 +1,7 @@
 """Database layer for AI News Pipeline — SQLite with WAL mode.
 
 All SQLite operations are centralized here:
-- Idempotent schema initialization
+- Idempotent schema initialization (including auto-migration from v1)
 - CRUD operations for all tables
 - Connection management (single connection per pipeline run)
 """
@@ -15,8 +15,28 @@ _DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
+CREATE TABLE IF NOT EXISTS interests (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                    TEXT    NOT NULL UNIQUE,
+    start_time              TEXT    NOT NULL DEFAULT '04:00',
+    interval_hours          INTEGER NOT NULL DEFAULT 24,
+    input_data_length_mode  TEXT    NOT NULL DEFAULT 'full_article',
+    input_word_count        INTEGER,
+    target_summary_words    INTEGER NOT NULL DEFAULT 750,
+    target_script_en_words  INTEGER NOT NULL DEFAULT 1250,
+    target_script_de_words  INTEGER NOT NULL DEFAULT 1250,
+    target_brief_words      INTEGER NOT NULL DEFAULT 700,
+    enable_summary          INTEGER NOT NULL DEFAULT 1,
+    enable_script_en        INTEGER NOT NULL DEFAULT 1,
+    enable_script_de        INTEGER NOT NULL DEFAULT 1,
+    enable_brief            INTEGER NOT NULL DEFAULT 1,
+    created_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    interest_id     INTEGER REFERENCES interests(id),
     run_date        TEXT    NOT NULL,
     started_at      TEXT    NOT NULL,
     completed_at    TEXT,
@@ -27,9 +47,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 
 CREATE TABLE IF NOT EXISTS feeds (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    url             TEXT    NOT NULL UNIQUE,
+    interest_id     INTEGER REFERENCES interests(id),
+    url             TEXT    NOT NULL,
     name            TEXT    NOT NULL,
-    category        TEXT    NOT NULL
+    category        TEXT    NOT NULL,
+    UNIQUE(interest_id, url)
 );
 
 CREATE TABLE IF NOT EXISTS articles (
@@ -121,23 +143,93 @@ class Database:
         """Execute all CREATE TABLE and CREATE INDEX IF NOT EXISTS statements.
 
         This is idempotent — safe to call multiple times.
+        Also runs auto-migration from v1 schema (adding columns if missing).
         """
         self._conn.executescript(_DDL)
         self._conn.commit()
+        self._migrate_v1_to_v2()
+
+    def _migrate_v1_to_v2(self) -> None:
+        """Auto-migrate a v1 database to v2 (multi-interest).
+
+        Steps:
+        1. Add ``interest_id`` columns to ``pipeline_runs`` and ``feeds`` if missing.
+        2. Recreate ``feeds`` unique constraint to be per-interest if it was URL-only.
+        3. Create a default 'AI' interest if none exists.
+        4. Assign all existing feeds and pipeline_runs to the default interest.
+        """
+        # Check if this is a v1 database (no interests table was previously present,
+        # but we just created it via _DDL — check if 'name' column exists)
+        cursor = self._conn.execute("PRAGMA table_info(pipeline_runs)")
+        cols = {row[1] for row in cursor.fetchall()}
+        if "interest_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN interest_id INTEGER REFERENCES interests(id)"
+            )
+            self._conn.commit()
+
+        cursor = self._conn.execute("PRAGMA table_info(feeds)")
+        cols = {row[1] for row in cursor.fetchall()}
+        if "interest_id" not in cols:
+            # SQLite doesn't support DROP CONSTRAINT, so we rebuild the table
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS feeds_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    interest_id INTEGER REFERENCES interests(id),
+                    url         TEXT    NOT NULL,
+                    name        TEXT    NOT NULL,
+                    category    TEXT    NOT NULL,
+                    UNIQUE(interest_id, url)
+                );
+                INSERT OR IGNORE INTO feeds_new (id, url, name, category)
+                    SELECT id, url, name, category FROM feeds;
+                DROP TABLE feeds;
+                ALTER TABLE feeds_new RENAME TO feeds;
+            """)
+            self._conn.commit()
+
+        # Create default 'AI' interest if none exists
+        existing = self._conn.execute("SELECT COUNT(*) FROM interests").fetchone()
+        if existing and existing[0] == 0:
+            self._conn.execute(
+                "INSERT INTO interests (name, start_time, interval_hours) VALUES (?, ?, ?)",
+                ("AI", "04:00", 24),
+            )
+            self._conn.commit()
+            ai_id = self._conn.execute(
+                "SELECT id FROM interests WHERE name = 'AI'"
+            ).fetchone()["id"]
+
+            # Assign all existing feeds and runs to the AI interest
+            self._conn.execute("UPDATE feeds SET interest_id = ? WHERE interest_id IS NULL", (ai_id,))
+            self._conn.execute("UPDATE pipeline_runs SET interest_id = ? WHERE interest_id IS NULL", (ai_id,))
+            self._conn.commit()
+
+            # Create indexes if they don't exist yet (for fresh v1→v2 migration)
+            self._conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_articles_pipeline_run ON articles(pipeline_run_id);
+                CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url);
+                CREATE INDEX IF NOT EXISTS idx_themes_pipeline_run ON themes(pipeline_run_id);
+                CREATE INDEX IF NOT EXISTS idx_deliverables_theme_type ON deliverables(theme_id, deliverable_type);
+                CREATE INDEX IF NOT EXISTS idx_evaluation_rounds_theme ON evaluation_rounds(theme_id);
+                CREATE INDEX IF NOT EXISTS idx_daily_briefs_pipeline_run ON daily_briefs(pipeline_run_id);
+                CREATE INDEX IF NOT EXISTS idx_pipeline_runs_date ON pipeline_runs(run_date);
+            """)
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # pipeline_runs
     # ------------------------------------------------------------------
 
-    def create_pipeline_run(self, run_date: str, started_at: str) -> int:
+    def create_pipeline_run(self, interest_id: int, run_date: str, started_at: str) -> int:
         """Insert a new pipeline run record.
 
         Returns:
             The ID of the newly created pipeline run.
         """
         cursor = self._conn.execute(
-            "INSERT INTO pipeline_runs (run_date, started_at) VALUES (?, ?)",
-            (run_date, started_at),
+            "INSERT INTO pipeline_runs (interest_id, run_date, started_at) VALUES (?, ?, ?)",
+            (interest_id, run_date, started_at),
         )
         self._conn.commit()
         return cursor.lastrowid
@@ -180,14 +272,6 @@ class Database:
         )
         self._conn.commit()
 
-    def get_last_successful_run(self) -> Optional[dict]:
-        """Return the most recent successfully completed pipeline run, or ``None``."""
-        row = self._conn.execute(
-            "SELECT * FROM pipeline_runs WHERE status = 'completed' "
-            "ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        return dict(row) if row else None
-
     def get_pipeline_run(self, run_id: int) -> Optional[dict]:
         """Return a pipeline run by ID, or ``None``."""
         row = self._conn.execute(
@@ -199,29 +283,54 @@ class Database:
     # feeds
     # ------------------------------------------------------------------
 
-    def upsert_feed(self, url: str, name: str, category: str) -> int:
-        """Insert a feed if it does not exist, or return its existing ID.
+    def upsert_feed(self, interest_id: int, url: str, name: str, category: str) -> int:
+        """Insert a feed if it does not exist for this interest, or return its existing ID.
 
         Returns:
             The feed ID (new or existing).
         """
         cursor = self._conn.execute(
-            "INSERT OR IGNORE INTO feeds (url, name, category) VALUES (?, ?, ?)",
-            (url, name, category),
+            "INSERT OR IGNORE INTO feeds (interest_id, url, name, category) VALUES (?, ?, ?, ?)",
+            (interest_id, url, name, category),
         )
         if cursor.lastrowid:
             self._conn.commit()
             return cursor.lastrowid
         # Already exists — fetch the ID
         row = self._conn.execute(
-            "SELECT id FROM feeds WHERE url = ?", (url,)
+            "SELECT id FROM feeds WHERE interest_id = ? AND url = ?", (interest_id, url)
         ).fetchone()
         return row["id"] if row else 0
 
-    def get_all_feeds(self) -> list[dict]:
-        """Return all configured feeds."""
-        rows = self._conn.execute("SELECT * FROM feeds ORDER BY id").fetchall()
+    def get_all_feeds(self, interest_id: Optional[int] = None) -> list[dict]:
+        """Return all configured feeds, optionally filtered by interest."""
+        if interest_id is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM feeds WHERE interest_id = ? ORDER BY id", (interest_id,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT * FROM feeds ORDER BY id").fetchall()
         return [dict(r) for r in rows]
+
+    def update_feed(self, feed_id: int, name: str, url: str, category: str) -> bool:
+        """Update a feed's name, url, and category. Returns True if a row was updated."""
+        cursor = self._conn.execute(
+            "UPDATE feeds SET name = ?, url = ?, category = ? WHERE id = ?",
+            (name, url, category, feed_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_feed(self, feed_id: int) -> bool:
+        """Delete a feed by ID. Returns True if a row was deleted."""
+        cursor = self._conn.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def get_feed(self, feed_id: int) -> Optional[dict]:
+        """Return a single feed by ID, or None."""
+        row = self._conn.execute("SELECT * FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # articles
@@ -519,6 +628,126 @@ class Database:
             "SELECT * FROM daily_briefs WHERE id = ?", (brief_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # interests
+    # ------------------------------------------------------------------
+
+    def create_interest(self, **kwargs) -> int:
+        """Create a new interest. Accepts all interest table columns as kwargs."""
+        fields = []
+        placeholders = []
+        values = []
+        valid_cols = {
+            "name", "start_time", "interval_hours", "input_data_length_mode",
+            "input_word_count", "target_summary_words", "target_script_en_words",
+            "target_script_de_words", "target_brief_words", "enable_summary",
+            "enable_script_en", "enable_script_de", "enable_brief",
+        }
+        for col in valid_cols:
+            if col in kwargs:
+                fields.append(col)
+                placeholders.append("?")
+                values.append(kwargs[col])
+        if "name" not in kwargs:
+            raise DatabaseError("Interest 'name' is required")
+
+        cursor = self._conn.execute(
+            f"INSERT INTO interests ({', '.join(fields)}) VALUES ({', '.join(placeholders)})",
+            values,
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def get_interest(self, interest_id: int) -> Optional[dict]:
+        """Return an interest by ID, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM interests WHERE id = ?", (interest_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_interest_by_name(self, name: str) -> Optional[dict]:
+        """Return an interest by name, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM interests WHERE name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_interests(self) -> list[dict]:
+        """Return all interests ordered by name."""
+        rows = self._conn.execute(
+            "SELECT * FROM interests ORDER BY name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_interest(self, interest_id: int, **kwargs) -> None:
+        """Update fields on an interest. Only provided fields are updated."""
+        valid_cols = {
+            "name", "start_time", "interval_hours", "input_data_length_mode",
+            "input_word_count", "target_summary_words", "target_script_en_words",
+            "target_script_de_words", "target_brief_words", "enable_summary",
+            "enable_script_en", "enable_script_de", "enable_brief",
+        }
+        fields = []
+        values = []
+        for col in valid_cols:
+            if col in kwargs:
+                fields.append(f"{col} = ?")
+                values.append(kwargs[col])
+        if not fields:
+            return
+        fields.append("updated_at = datetime('now')")
+        values.append(interest_id)
+        self._conn.execute(
+            f"UPDATE interests SET {', '.join(fields)} WHERE id = ?", values
+        )
+        self._conn.commit()
+
+    def delete_interest(self, interest_id: int) -> None:
+        """Delete an interest and all its associated feeds, pipeline runs cascade."""
+        self._conn.execute("DELETE FROM feeds WHERE interest_id = ?", (interest_id,))
+        # Pipeline runs cascade via foreign key
+        self._conn.execute("DELETE FROM interests WHERE id = ?", (interest_id,))
+        self._conn.commit()
+
+    def get_last_successful_run(self, interest_id: Optional[int] = None) -> Optional[dict]:
+        """Return the most recent successfully completed pipeline run, or ``None``."""
+        if interest_id is not None:
+            row = self._conn.execute(
+                "SELECT * FROM pipeline_runs WHERE status = 'completed' AND interest_id = ? "
+                "ORDER BY id DESC LIMIT 1", (interest_id,)
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM pipeline_runs WHERE status = 'completed' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_last_run_for_interest(self, interest_id: int) -> Optional[dict]:
+        """Return the most recent pipeline run for an interest (any status)."""
+        row = self._conn.execute(
+            "SELECT * FROM pipeline_runs WHERE interest_id = ? ORDER BY id DESC LIMIT 1",
+            (interest_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_run_status(self, interest_id: int) -> Optional[dict]:
+        """Return the most recent pipeline run status for an interest."""
+        row = self._conn.execute(
+            "SELECT status, started_at, completed_at, error_message "
+            "FROM pipeline_runs WHERE interest_id = ? ORDER BY id DESC LIMIT 1",
+            (interest_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def is_interest_running(self, interest_id: int) -> bool:
+        """Check if a pipeline run is currently in progress for this interest."""
+        row = self._conn.execute(
+            "SELECT 1 FROM pipeline_runs WHERE interest_id = ? AND status = 'running' LIMIT 1",
+            (interest_id,),
+        ).fetchone()
+        return row is not None
 
     # ------------------------------------------------------------------
     # lifecycle

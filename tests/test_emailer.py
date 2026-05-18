@@ -18,6 +18,7 @@ from src.models import (
     EmailConfig,
     FeedDef,
     FeedsConfig,
+    InterestConfig,
     ModelDef,
     ModelsConfig,
     OpenRouterConfig,
@@ -92,7 +93,7 @@ def seeded_db(db, config):
 
     Returns a dict with the Database, config, and run_id so tests can inspect.
     """
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+    run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
     # Insert a daily brief
     db.insert_daily_brief(run_id, "This is the daily brief content.", 42)
@@ -346,7 +347,7 @@ class TestRunEmail:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         sent_subjects = [
             a[0][0]["Subject"] for a in smtp.send_message.call_args_list
@@ -375,7 +376,7 @@ class TestRunEmail:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         sent_subjects = [
             a[0][0]["Subject"] for a in smtp.send_message.call_args_list
@@ -399,7 +400,7 @@ class TestRunEmail:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         # Find the AI Safety theme email
         theme_msg = None
@@ -430,7 +431,7 @@ class TestRunEmail:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         assert smtp.send_message.call_count == 3
 
@@ -445,7 +446,7 @@ class TestRunMissingBrief:
 
     def test_skips_brief_when_none_exists(self, db, config):
         """No daily_briefs row → no brief email sent; theme emails still go out."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
         # Add a theme with deliverables so we can verify at least something is sent
         theme_id = db.insert_theme(run_id, "Only Theme", "Desc", [1], "emerging", 0)
@@ -458,7 +459,7 @@ class TestRunMissingBrief:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         sent_subjects = [
             a[0][0]["Subject"] for a in smtp.send_message.call_args_list
@@ -481,7 +482,7 @@ class TestRunNoDeliverables:
 
     def test_skips_theme_with_no_deliverables(self, db, config):
         """Approved theme with zero deliverables → skipped."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
         db.insert_daily_brief(run_id, "Brief content", 10)
 
         theme_id = db.insert_theme(
@@ -496,7 +497,7 @@ class TestRunNoDeliverables:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         sent_subjects = [
             a[0][0]["Subject"] for a in smtp.send_message.call_args_list
@@ -513,7 +514,7 @@ class TestRunNoDeliverables:
         The code iterates over known types (summary_en, script_en, script_de).
         If none match, ``parts`` stays empty and the theme is skipped.
         """
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
         db.insert_daily_brief(run_id, "Brief", 10)
 
         theme_id = db.insert_theme(
@@ -528,7 +529,7 @@ class TestRunNoDeliverables:
         with patch("smtplib.SMTP", return_value=smtp), patch.dict(
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ), patch("time.sleep"):
-            run(run_id, db, config)
+            run(run_id, db, config, InterestConfig(name="AI", id=1))
 
         sent_subjects = [
             a[0][0]["Subject"] for a in smtp.send_message.call_args_list
@@ -552,7 +553,7 @@ class TestRunMissingRun:
         from src.emailer import EmailError, run
 
         with pytest.raises(EmailError) as excinfo:
-            run(9999, db, config)
+            run(9999, db, config, InterestConfig(name="AI", id=1))
 
         assert "9999" in str(excinfo.value)
         assert "not found" in str(excinfo.value)
@@ -566,7 +567,7 @@ class TestRunMissingRun:
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ):
             with pytest.raises(Exception):
-                run(9999, db, config)
+                run(9999, db, config, InterestConfig(name="AI", id=1))
 
         smtp.send_message.assert_not_called()
 
@@ -588,7 +589,7 @@ class TestFailureAlert:
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ):
             send_failure_alert(
-                config, "scrape", "Connection refused", "Traceback...", "Log tail...",
+                config, "AI", "scrape", "Connection refused", "Traceback...",
             )
 
         msg = smtp.send_message.call_args[0][0]
@@ -605,18 +606,16 @@ class TestFailureAlert:
         ):
             send_failure_alert(
                 config,
+                "AI",
                 "extract",
                 "TimeoutError: LLM did not respond",
                 "Traceback (most recent call last):\n  File ...",
-                "2026-05-14 06:00:01 INFO  Starting extraction stage\n...",
             )
 
         body = smtp.send_message.call_args[0][0].get_payload(decode=True).decode("utf-8")
         assert "Stage: extract" in body
         assert "TimeoutError: LLM did not respond" in body
         assert "Traceback (most recent call last):" in body
-        assert "Starting extraction stage" in body
-        assert "Recent logs:" in body
 
     def test_sends_single_email(self, config):
         """send_failure_alert sends exactly one email."""
@@ -627,7 +626,7 @@ class TestFailureAlert:
             os.environ, {"GMAIL_APP_PASSWORD": "testpass"}
         ):
             send_failure_alert(
-                config, "scrape", "error", "traceback", "log",
+                config, "AI", "scrape", "error", "traceback",
             )
 
         assert smtp.send_message.call_count == 1

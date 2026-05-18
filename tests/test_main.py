@@ -24,7 +24,7 @@ import pytest
 
 from src.db import Database
 from src.llm import LLMClient, LLMClientError
-from src.main import (
+from src.main_old import (
     StageFailedError,
     _build_arg_parser,
     _build_feedback_from_eval,
@@ -41,6 +41,7 @@ from src.models import (
     EmailConfig,
     FeedDef,
     FeedsConfig,
+    InterestConfig,
     ModelDef,
     ModelsConfig,
     OpenRouterConfig,
@@ -116,8 +117,9 @@ def db() -> Database:
 @pytest.fixture
 def seeded_db(db):
     """In-memory DB with one pipeline run, one pending theme, and article."""
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-    feed_id = db.upsert_feed("https://example.com/rss", "Test Feed", "news")
+    ai_id = db.get_interest_by_name("AI")["id"]
+    run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+    feed_id = db.upsert_feed(ai_id, "https://example.com/rss", "Test Feed", "news")
     article_id = db.insert_article(
         feed_id, "https://example.com/a1", "Article 1",
         None, "2026-05-14T07:00:00", "2026-05-14T07:05:00",
@@ -333,7 +335,7 @@ class TestReadLogTail:
             log_path = tf.name
 
         try:
-            import src.main as main_mod
+            import src.main_old as main_mod
             main_mod._log_file_path = log_path
             tail = _read_log_tail(lines=50)
             lines = tail.strip().split("\n")
@@ -345,13 +347,13 @@ class TestReadLogTail:
             os.unlink(log_path)
 
     def test_returns_placeholder_when_no_log_file(self):
-        import src.main as main_mod
+        import src.main_old as main_mod
         main_mod._log_file_path = None
         tail = _read_log_tail()
         assert "(no log file" in tail
 
     def test_returns_placeholder_when_file_missing(self):
-        import src.main as main_mod
+        import src.main_old as main_mod
         main_mod._log_file_path = "/nonexistent/path.log"
         tail = _read_log_tail()
         assert "(no log file" in tail
@@ -463,22 +465,23 @@ class TestRunGenerateEvaluate:
         run_id = seeded_db["run_id"]
         theme_id = seeded_db["theme_id"]
         llm = _make_mock_llm()
+        interest = InterestConfig(name="AI", id=1)
 
         # Mock generator.run to insert deliverables
-        def fake_generate(run_id, db, config, llm_client):
+        def fake_generate(run_id, db, config, llm_client, interest):
             db.insert_deliverable(theme_id, "summary_en", "summary v1", 1)
             db.insert_deliverable(theme_id, "script_en", "script v1", 1)
             db.insert_deliverable(theme_id, "script_de", "script v1", 1)
 
         # Evaluator mock must also update the theme status (as the real one does)
-        def fake_eval(run_id, db, config, llm_client, theme_id):
+        def fake_eval(run_id, db, config, llm_client, theme_id, interest):
             db.update_theme_status(theme_id, "approved")
             return "approved"
 
-        with patch("src.main.generator.run", side_effect=fake_generate), \
-             patch("src.main.evaluator.run", side_effect=fake_eval), \
-             patch("src.main.generator.refine"):
-            _run_generate_evaluate(run_id, db, config, llm)
+        with patch("src.main_old.generator.run", side_effect=fake_generate), \
+             patch("src.main_old.evaluator.run", side_effect=fake_eval), \
+             patch("src.main_old.generator.refine"):
+            _run_generate_evaluate(run_id, db, config, llm, interest)
 
         # Theme should be approved
         themes = db.get_themes_for_run(run_id)
@@ -500,7 +503,7 @@ class TestRunGenerateEvaluate:
         # Evaluator.run returns "needs_refinement" twice, then "approved"
         eval_responses = ["needs_refinement", "needs_refinement", "approved"]
 
-        def fake_eval(run_id, db, config, llm_client, theme_id):
+        def fake_eval(run_id, db, config, llm_client, theme_id, interest):
             # Store an evaluation round so feedback can be extracted
             response = eval_responses.pop(0)
             db.insert_evaluation_round(
@@ -516,13 +519,13 @@ class TestRunGenerateEvaluate:
 
         refine_calls = []
 
-        def fake_refine(run_id, db, config, llm_client, theme_id, feedback):
+        def fake_refine(run_id, db, config, llm_client, theme_id, feedback, interest):
             refine_calls.append(feedback)
 
-        with patch("src.main.generator.run"), \
-             patch("src.main.evaluator.run", side_effect=fake_eval), \
-             patch("src.main.generator.refine", side_effect=fake_refine):
-            _run_generate_evaluate(run_id, db, config, llm)
+        with patch("src.main_old.generator.run"), \
+             patch("src.main_old.evaluator.run", side_effect=fake_eval), \
+             patch("src.main_old.generator.refine", side_effect=fake_refine):
+            _run_generate_evaluate(run_id, db, config, llm, InterestConfig(name="AI", id=1))
 
         # Should have called refine twice
         assert len(refine_calls) == 2
@@ -537,9 +540,9 @@ class TestRunGenerateEvaluate:
         # Mark theme as already approved
         db.update_theme_status(theme_id, "approved")
 
-        with patch("src.main.generator.run") as mock_gen, \
-             patch("src.main.evaluator.run") as mock_eval:
-            _run_generate_evaluate(run_id, db, config, llm)
+        with patch("src.main_old.generator.run") as mock_gen, \
+             patch("src.main_old.evaluator.run") as mock_eval:
+            _run_generate_evaluate(run_id, db, config, llm, InterestConfig(name="AI", id=1))
 
         # Generator should still be called (it iterates themes itself)
         # but evaluator should NOT be called (theme is not "pending")
@@ -556,12 +559,12 @@ class TestMainSuccess:
 
     def test_exit_code_0_on_success(self, config, db):
         """main() exits with code 0 when all stages succeed."""
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper") as mock_retry, \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper") as mock_retry, \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -576,7 +579,7 @@ class TestMainSuccess:
 
     def test_pipeline_status_completed(self, config, db):
         """After success, the pipeline run status is 'completed'."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
         run = db.get_pipeline_run(run_id)
         assert run is not None
 
@@ -588,12 +591,12 @@ class TestMainSuccess:
         original_close = db.close
         db.close = lambda: None  # type: ignore[method-assign]
 
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper"), \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper"), \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
@@ -618,9 +621,9 @@ class TestMainInitDb:
             return config
         db_factory = lambda path: db  # noqa: E731
 
-        with patch("src.main.from_yaml", side_effect=fake_from_yaml), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.setup_logging"), \
+        with patch("src.main_old.from_yaml", side_effect=fake_from_yaml), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.setup_logging"), \
               patch.object(sys, "argv", ["main.py", "--config", "config/", "--init-db"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -639,8 +642,8 @@ class TestMainConfigError:
     def test_config_error_exits_two(self):
         from src.config import ConfigError
 
-        with patch("src.main.from_yaml", side_effect=ConfigError("bad yaml")), \
-             patch("src.main.setup_logging"), \
+        with patch("src.main_old.from_yaml", side_effect=ConfigError("bad yaml")), \
+             patch("src.main_old.setup_logging"), \
               patch.object(sys, "argv", ["main.py", "--config", "missing/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -658,15 +661,15 @@ class TestMainFailure:
 
     def test_exit_code_1_on_stage_failure(self, config, db):
         """When a stage fails, main() exits with code 1."""
-        from src.main import StageFailedError
+        from src.main_old import StageFailedError
 
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
-             patch("src.main.emailer.send_failure_alert"), \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
+             patch("src.main_old.emailer.send_failure_alert"), \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -675,9 +678,9 @@ class TestMainFailure:
 
     def test_db_updated_on_failure(self, config, db):
         """Pipeline run is marked as 'failed' with error_message."""
-        from src.main import StageFailedError
+        from src.main_old import StageFailedError
 
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
         def fake_create_pipeline_run(*args, **kwargs):
             return run_id
@@ -687,13 +690,13 @@ class TestMainFailure:
         original_close = db.close
         db.close = lambda: None  # type: ignore[method-assign]
 
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper", side_effect=StageFailedError("analyze", ValueError("boom"))), \
-             patch("src.main.emailer.send_failure_alert"), \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper", side_effect=StageFailedError("analyze", ValueError("boom"))), \
+             patch("src.main_old.emailer.send_failure_alert"), \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
@@ -707,15 +710,15 @@ class TestMainFailure:
 
     def test_failure_alert_sent(self, config, db):
         """On stage failure, send_failure_alert is called."""
-        from src.main import StageFailedError
+        from src.main_old import StageFailedError
 
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper", side_effect=StageFailedError("brief", ValueError("fail"))), \
-             patch("src.main.emailer.send_failure_alert") as mock_alert, \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper", side_effect=StageFailedError("brief", ValueError("fail"))), \
+             patch("src.main_old.emailer.send_failure_alert") as mock_alert, \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit):
                 main()
@@ -729,15 +732,15 @@ class TestMainFailure:
 
     def test_failure_alert_error_does_not_crash_pipeline(self, config, db):
         """If send_failure_alert itself raises, the pipeline logs and exits 1."""
-        from src.main import StageFailedError
+        from src.main_old import StageFailedError
 
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.LLMClient", return_value=_make_mock_llm()), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.LLMClient", return_value=_make_mock_llm()), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}), \
-             patch("src.main.setup_logging"), \
-             patch("src.main.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
-             patch("src.main.emailer.send_failure_alert", side_effect=RuntimeError("smtp down")), \
+             patch("src.main_old.setup_logging"), \
+             patch("src.main_old.retry_wrapper", side_effect=StageFailedError("scrape", ValueError("fail"))), \
+             patch("src.main_old.emailer.send_failure_alert", side_effect=RuntimeError("smtp down")), \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -747,9 +750,9 @@ class TestMainFailure:
 
     def test_missing_api_key_exits_two(self, config, db):
         """If OPENROUTER_API_KEY is not set, main() exits with code 2."""
-        with patch("src.main.from_yaml", return_value=config), \
-             patch("src.main.Database", return_value=db), \
-             patch("src.main.setup_logging"), \
+        with patch("src.main_old.from_yaml", return_value=config), \
+             patch("src.main_old.Database", return_value=db), \
+             patch("src.main_old.setup_logging"), \
              patch.dict(os.environ, {}, clear=True), \
              patch.object(sys, "argv", ["main.py", "--config", "config/"]):
             with pytest.raises(SystemExit) as excinfo:

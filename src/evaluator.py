@@ -21,6 +21,7 @@ from typing import Optional
 from .config import Config
 from .db import Database
 from .llm import LLMClient
+from .models import InterestConfig
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ def run(
     config: Config,
     llm_client: LLMClient,
     theme_id: int,
+    interest: InterestConfig,
 ) -> str:
     """Evaluate deliverables for a single theme.
 
@@ -48,6 +50,8 @@ def run(
         Configured :class:`LLMClient` for OpenRouter calls.
     theme_id:
         The theme to evaluate.
+    interest:
+        The ``InterestConfig`` for this pipeline run.
 
     Returns
     -------
@@ -56,6 +60,11 @@ def run(
         max refinement rounds.  ``'needs_refinement'`` if a refinement round is
         required.
     """
+    # Defensive check: if all deliverables are disabled, skip evaluation
+    if not interest.any_deliverable_enabled:
+        db.update_theme_status(theme_id, "approved")
+        return "approved"
+
     # Determine current round number
     latest_eval = db.get_latest_evaluation(theme_id)
     round_number = (latest_eval["round_number"] + 1) if latest_eval else 1
@@ -85,20 +94,20 @@ def run(
 
     # ---- Quality evaluation ----
     quality_result = _run_quality_eval(
-        llm_client, config, theme, deliverables, articles_text
+        llm_client, config, theme, deliverables, articles_text, interest
     )
 
     # ---- Adversarial evaluation ----
     adversarial_result = _run_adversarial_eval(
-        llm_client, config, theme, deliverables, articles_text
+        llm_client, config, theme, deliverables, articles_text, interest
     )
 
     # ---- Determine overall result ----
-    quality_all_pass = _all_quality_pass(quality_result)
+    quality_all_pass = _all_quality_pass(quality_result, interest)
     adversarial_pass = adversarial_result.get("pass", False)
     overall_passed = "pass" if (quality_all_pass and adversarial_pass) else "fail"
 
-    combined_feedback = _build_combined_feedback(quality_result, adversarial_result)
+    combined_feedback = _build_combined_feedback(quality_result, adversarial_result, interest)
 
     # Store evaluation round
     db.insert_evaluation_round(
@@ -147,20 +156,39 @@ def _run_quality_eval(
     theme: dict,
     deliverables: dict,
     articles_text: str,
+    interest: InterestConfig,
 ) -> dict:
     """Run the quality evaluation and return the parsed result dict."""
     template = (_PROMPTS_DIR / "evaluate_quality.txt").read_text(encoding="utf-8")
     parts = template.split("=== USER ===")
     if len(parts) != 2:
         logger.error("evaluate_quality.txt prompt template is malformed")
-        return _fallback_quality_fail(deliverables, "Malformed prompt template")
+        return _fallback_quality_fail(deliverables, "Malformed prompt template", interest)
 
     system_prompt = parts[0].replace("=== SYSTEM ===\n", "").strip()
+
+    # Determine content for each deliverable — use "[DISABLED]" for disabled ones
+    summary_content = (
+        deliverables.get("summary_en", {}).get("content", "[MISSING]")
+        if interest.enable_summary or interest.enable_script_en or interest.enable_script_de
+        else "[DISABLED]"
+    )
+    script_en_content = (
+        deliverables.get("script_en", {}).get("content", "[MISSING]")
+        if interest.enable_script_en
+        else "[DISABLED]"
+    )
+    script_de_content = (
+        deliverables.get("script_de", {}).get("content", "[MISSING]")
+        if interest.enable_script_de
+        else "[DISABLED]"
+    )
+
     user_prompt = parts[1].strip().format(
         theme_title=theme["title"],
-        summary_en=deliverables.get("summary_en", {}).get("content", "[MISSING]"),
-        script_en=deliverables.get("script_en", {}).get("content", "[MISSING]"),
-        script_de=deliverables.get("script_de", {}).get("content", "[MISSING]"),
+        summary_en=summary_content,
+        script_en=script_en_content,
+        script_de=script_de_content,
     )
 
     try:
@@ -172,9 +200,9 @@ def _run_quality_eval(
         )
     except Exception as exc:
         logger.warning("Quality eval LLM call failed: %s", exc)
-        return _fallback_quality_fail(deliverables, f"LLM error: {exc}")
+        return _fallback_quality_fail(deliverables, f"LLM error: {exc}", interest)
 
-    return _parse_json_response(raw, _fallback_quality_fail(deliverables, "JSON parse error"))
+    return _parse_json_response(raw, _fallback_quality_fail(deliverables, "JSON parse error", interest))
 
 
 def _run_adversarial_eval(
@@ -183,6 +211,7 @@ def _run_adversarial_eval(
     theme: dict,
     deliverables: dict,
     articles_text: str,
+    interest: InterestConfig,
 ) -> dict:
     """Run the adversarial evaluation and return the parsed result dict."""
     template = (_PROMPTS_DIR / "evaluate_adversarial.txt").read_text(encoding="utf-8")
@@ -192,12 +221,30 @@ def _run_adversarial_eval(
         return {"pass": True, "feedback": "Malformed prompt template — skipped", "issues": []}
 
     system_prompt = parts[0].replace("=== SYSTEM ===\n", "").strip()
+
+    # Determine content for each deliverable — use "[DISABLED]" for disabled ones
+    summary_content = (
+        deliverables.get("summary_en", {}).get("content", "[MISSING]")
+        if interest.enable_summary or interest.enable_script_en or interest.enable_script_de
+        else "[DISABLED]"
+    )
+    script_en_content = (
+        deliverables.get("script_en", {}).get("content", "[MISSING]")
+        if interest.enable_script_en
+        else "[DISABLED]"
+    )
+    script_de_content = (
+        deliverables.get("script_de", {}).get("content", "[MISSING]")
+        if interest.enable_script_de
+        else "[DISABLED]"
+    )
+
     user_prompt = parts[1].strip().format(
         theme_title=theme["title"],
         articles_text=articles_text,
-        summary_en=deliverables.get("summary_en", {}).get("content", "[MISSING]"),
-        script_en=deliverables.get("script_en", {}).get("content", "[MISSING]"),
-        script_de=deliverables.get("script_de", {}).get("content", "[MISSING]"),
+        summary_en=summary_content,
+        script_en=script_en_content,
+        script_de=script_de_content,
     )
 
     try:
@@ -216,29 +263,48 @@ def _run_adversarial_eval(
     return _parse_json_response(raw, fallback)
 
 
-def _fallback_quality_fail(deliverables: dict, reason: str) -> dict:
-    """Build a quality eval result where all deliverables fail."""
+def _fallback_quality_fail(deliverables: dict, reason: str, interest: InterestConfig) -> dict:
+    """Build a quality eval result where all enabled deliverables fail."""
     result = {}
-    for dtype in ("summary_en", "script_en", "script_de"):
-        result[dtype] = {"pass": False, "feedback": f"Evaluation could not be completed: {reason}"}
+    if interest.enable_summary or interest.enable_script_en or interest.enable_script_de:
+        result["summary_en"] = {"pass": False, "feedback": f"Evaluation could not be completed: {reason}"}
+    if interest.enable_script_en:
+        result["script_en"] = {"pass": False, "feedback": f"Evaluation could not be completed: {reason}"}
+    if interest.enable_script_de:
+        result["script_de"] = {"pass": False, "feedback": f"Evaluation could not be completed: {reason}"}
     return result
 
 
-def _all_quality_pass(quality_result: dict) -> bool:
-    """Check if all deliverables pass the quality evaluation."""
-    for dtype in ("summary_en", "script_en", "script_de"):
+def _all_quality_pass(quality_result: dict, interest: InterestConfig) -> bool:
+    """Check if all enabled deliverables pass the quality evaluation."""
+    for dtype, toggle in (
+        ("summary_en", interest.enable_summary or interest.enable_script_en or interest.enable_script_de),
+        ("script_en", interest.enable_script_en),
+        ("script_de", interest.enable_script_de),
+    ):
+        if not toggle:
+            continue
         if dtype in quality_result:
+            content = quality_result[dtype].get("content", "")
+            if content == "[DISABLED]":
+                continue
             if not quality_result[dtype].get("pass", False):
                 return False
     return True
 
 
-def _build_combined_feedback(quality_result: dict, adversarial_result: dict) -> str:
+def _build_combined_feedback(quality_result: dict, adversarial_result: dict, interest: InterestConfig) -> str:
     """Combine quality and adversarial feedback into a single string."""
     parts: list[str] = []
 
     parts.append("=== QUALITY FEEDBACK ===")
-    for dtype in ("summary_en", "script_en", "script_de"):
+    for dtype, toggle in (
+        ("summary_en", interest.enable_summary or interest.enable_script_en or interest.enable_script_de),
+        ("script_en", interest.enable_script_en),
+        ("script_de", interest.enable_script_de),
+    ):
+        if not toggle:
+            continue
         if dtype in quality_result:
             d = quality_result[dtype]
             parts.append(f"\n{dtype}: {'PASS' if d.get('pass') else 'FAIL'}")

@@ -26,9 +26,10 @@ def db():
 
 @pytest.fixture
 def seeded_db(db):
-    """``db`` with one feed and one pipeline_run pre-inserted."""
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-    feed_id = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+    """``db`` with one interest, one feed, and one pipeline_run pre-inserted."""
+    ai_id = db.get_interest_by_name("AI")["id"]
+    run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+    feed_id = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
     db.update_pipeline_run(run_id, status="completed", completed_at="2026-05-14T06:30:00")
     return {"db": db, "run_id": run_id, "feed_id": feed_id}
 
@@ -77,14 +78,16 @@ class TestCreatePipelineRun:
     """Insert pipeline runs."""
 
     def test_returns_positive_integer(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         assert isinstance(run_id, int)
         assert run_id > 0
 
     def test_stores_all_fields(self, db):
+        ai_id = db.get_interest_by_name("AI")["id"]
         run_date = "2026-05-14"
         started_at = "2026-05-14T06:00:00"
-        run_id = db.create_pipeline_run(run_date, started_at)
+        run_id = db.create_pipeline_run(ai_id, run_date, started_at)
         row = db._conn.execute("SELECT * FROM pipeline_runs WHERE id = ?", (run_id,)).fetchone()
         assert row["run_date"] == run_date
         assert row["started_at"] == started_at
@@ -102,7 +105,8 @@ class TestGetPipelineRun:
     """Retrieve pipeline runs by ID."""
 
     def test_returns_run_by_id(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         run = db.get_pipeline_run(run_id)
         assert run is not None
         assert run["id"] == run_id
@@ -119,31 +123,36 @@ class TestUpdatePipelineRun:
     """Update fields on pipeline runs."""
 
     def test_update_status(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, status="completed")
         run = db.get_pipeline_run(run_id)
         assert run["status"] == "completed"
 
     def test_update_completed_at(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, completed_at="2026-05-14T06:30:00")
         run = db.get_pipeline_run(run_id)
         assert run["completed_at"] == "2026-05-14T06:30:00"
 
     def test_update_current_stage(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, current_stage="scraping")
         run = db.get_pipeline_run(run_id)
         assert run["current_stage"] == "scraping"
 
     def test_update_error_message(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, error_message="something went wrong")
         run = db.get_pipeline_run(run_id)
         assert run["error_message"] == "something went wrong"
 
     def test_only_specified_fields_change(self, db):
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, status="completed", current_stage="done")
         run = db.get_pipeline_run(run_id)
         assert run["status"] == "completed"
@@ -154,7 +163,8 @@ class TestUpdatePipelineRun:
 
     def test_none_does_not_change_field(self, db):
         """Passing None for a field should leave the stored value intact."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(run_id, status="completed")
         # Now update with None for status — should be a no-op for that field
         db.update_pipeline_run(run_id, status=None, current_stage="scraping")
@@ -171,12 +181,13 @@ class TestGetLastSuccessfulRun:
     """Retrieve the most recent completed pipeline run."""
 
     def test_returns_most_recent_completed(self, db):
-        db.create_pipeline_run("2026-05-13", "2026-05-13T06:00:00")  # no status update
-        r2 = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        db.create_pipeline_run(ai_id, "2026-05-13", "2026-05-13T06:00:00")  # no status update
+        r2 = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(r2, status="completed", completed_at="2026-05-14T06:30:00")
-        r3 = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        r3 = db.create_pipeline_run(ai_id, "2026-05-15", "2026-05-15T06:00:00")
         db.update_pipeline_run(r3, status="completed", completed_at="2026-05-15T06:30:00")
-        r4 = db.create_pipeline_run("2026-05-16", "2026-05-16T06:00:00")
+        r4 = db.create_pipeline_run(ai_id, "2026-05-16", "2026-05-16T06:00:00")
         db.update_pipeline_run(r4, status="failed", completed_at="2026-05-16T06:30:00")
 
         last = db.get_last_successful_run()
@@ -184,8 +195,9 @@ class TestGetLastSuccessfulRun:
         assert last["id"] == r3  # most recent 'completed', not 'failed'
 
     def test_returns_none_when_no_completed_runs(self, db):
-        db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-        db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+        db.create_pipeline_run(ai_id, "2026-05-15", "2026-05-15T06:00:00")
         # Neither marked as completed
         assert db.get_last_successful_run() is None
 
@@ -198,18 +210,21 @@ class TestUpsertFeed:
     """Insert-or-ignore feeds."""
 
     def test_insert_new_feed_returns_id(self, db):
-        feed_id = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        feed_id = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
         assert isinstance(feed_id, int)
         assert feed_id > 0
 
     def test_duplicate_url_returns_same_id(self, db):
-        feed_id_1 = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
-        feed_id_2 = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        feed_id_1 = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
+        feed_id_2 = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
         assert feed_id_2 == feed_id_1
 
     def test_different_feed_returns_new_id(self, db):
-        feed_id_1 = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
-        feed_id_2 = db.upsert_feed("https://other.com/rss", "Other Feed", "commentators")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        feed_id_1 = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
+        feed_id_2 = db.upsert_feed(ai_id, "https://other.com/rss", "Other Feed", "commentators")
         assert feed_id_2 > feed_id_1
 
 
@@ -221,8 +236,9 @@ class TestGetAllFeeds:
     """Retrieve all feeds."""
 
     def test_returns_all_feeds(self, db):
-        db.upsert_feed("https://a.com/rss", "Feed A", "news")
-        db.upsert_feed("https://b.com/rss", "Feed B", "commentators")
+        ai_id = db.get_interest_by_name("AI")["id"]
+        db.upsert_feed(ai_id, "https://a.com/rss", "Feed A", "news")
+        db.upsert_feed(ai_id, "https://b.com/rss", "Feed B", "commentators")
         feeds = db.get_all_feeds()
         assert len(feeds) == 2
         names = {f["name"] for f in feeds}
@@ -329,7 +345,7 @@ class TestGetArticlesForRun:
         feed_id = seeded_db["feed_id"]
         run_id_1 = seeded_db["run_id"]
 
-        run_id_2 = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        run_id_2 = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-15", "2026-05-15T06:00:00")
 
         a1 = db.insert_article(feed_id, "https://example.com/r1a1", "Run1 Article", None,
                                "2026-05-14T07:00:00", "2026-05-14T07:05:00",
@@ -348,7 +364,7 @@ class TestGetArticlesForRun:
 
     def test_empty_list_for_run_with_no_articles(self, seeded_db):
         db = seeded_db["db"]
-        run_id_2 = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        run_id_2 = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-15", "2026-05-15T06:00:00")
         assert db.get_articles_for_run(run_id_2) == []
 
 
@@ -421,7 +437,7 @@ class TestGetThemesForRun:
     def test_filters_by_run_id(self, seeded_db):
         db = seeded_db["db"]
         run_id_1 = seeded_db["run_id"]
-        run_id_2 = db.create_pipeline_run("2026-05-15", "2026-05-15T06:00:00")
+        run_id_2 = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-15", "2026-05-15T06:00:00")
 
         db.insert_theme(run_id_1, "T1", "Desc", [1], "emerging", 0)
         db.insert_theme(run_id_2, "T2", "Desc", [2], "established", 0)
@@ -679,19 +695,20 @@ class TestGetPreviousDailyBrief:
 
     def test_returns_most_recent_before_date(self, seeded_db):
         db = seeded_db["db"]
+        ai_id = db.get_interest_by_name("AI")["id"]
 
         # Run 1: completed, run_date 2026-05-12
-        r1 = db.create_pipeline_run("2026-05-12", "2026-05-12T06:00:00")
+        r1 = db.create_pipeline_run(ai_id, "2026-05-12", "2026-05-12T06:00:00")
         db.update_pipeline_run(r1, status="completed", completed_at="2026-05-12T06:30:00")
         b1 = db.insert_daily_brief(r1, "Brief for May 12", 100)
 
         # Run 2: completed, run_date 2026-05-13
-        r2 = db.create_pipeline_run("2026-05-13", "2026-05-13T06:00:00")
+        r2 = db.create_pipeline_run(ai_id, "2026-05-13", "2026-05-13T06:00:00")
         db.update_pipeline_run(r2, status="completed", completed_at="2026-05-13T06:30:00")
         b2 = db.insert_daily_brief(r2, "Brief for May 13", 110)
 
         # Run 3: failed, run_date 2026-05-14 (should be skipped)
-        r3 = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        r3 = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(r3, status="failed", completed_at="2026-05-14T06:30:00")
         db.insert_daily_brief(r3, "Brief for failed run", 120)
 
@@ -703,8 +720,9 @@ class TestGetPreviousDailyBrief:
 
     def test_returns_none_when_no_prior_completed_run(self, seeded_db):
         db = seeded_db["db"]
+        ai_id = db.get_interest_by_name("AI")["id"]
         # Only one completed run on 2026-05-14, but we query for a date before it
-        r1 = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        r1 = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
         db.update_pipeline_run(r1, status="completed", completed_at="2026-05-14T06:30:00")
         db.insert_daily_brief(r1, "Only brief", 100)
 
@@ -743,7 +761,8 @@ class TestContextManager:
         """__enter__ returns Database, __exit__ closes connection."""
         with Database(":memory:") as db:
             db.initialize_schema()
-            run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+            ai_id = db.get_interest_by_name("AI")["id"]
+            run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
             assert run_id > 0
             # Connection should be open inside the block
             db._conn.execute("SELECT 1")

@@ -1,15 +1,22 @@
 [Unit]
-Description=AI News Pipeline
+Description=AI News Pipeline — Multi-Interest Server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=ai-news-pipeline
 Group=ai-news-pipeline
 WorkingDirectory=/opt/ai-news-pipeline
 EnvironmentFile=/opt/ai-news-pipeline/.env
-ExecStart=/opt/ai-news-pipeline/venv/bin/python -m src.main --config /opt/ai-news-pipeline/config/ --log-file /opt/ai-news-pipeline/logs/pipeline.log
-TimeoutStartSec=7200
+ExecStart=/opt/ai-news-pipeline/venv/bin/python -m src.main \
+  --config /opt/ai-news-pipeline/config/ \
+  --serve \
+  --log-file /opt/ai-news-pipeline/logs/pipeline.log
+Restart=always
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

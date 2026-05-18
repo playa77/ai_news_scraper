@@ -1,8 +1,8 @@
 """Email dispatch for AI News Pipeline — Gmail SMTP with App Password.
 
 Provides the pipeline with success-email formatting (daily brief + per-theme
-deliverables) and failure-alert formatting (stage name, error, traceback, log
-tail).  Internal SMTP send retries transient errors up to 2 times with a 10 s
+deliverables) and failure-alert formatting (stage name, error, traceback).
+Internal SMTP send retries transient errors up to 2 times with a 10 s
 fixed backoff.
 """
 
@@ -15,7 +15,7 @@ import time
 from email.mime.text import MIMEText
 
 from .db import Database
-from .models import Config
+from .models import Config, InterestConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,10 @@ class EmailError(Exception):
 
 def send_failure_alert(
     config: Config,
+    interest_name: str,
     stage_name: str,
     error_message: str,
     traceback_str: str,
-    log_tail: str,
 ) -> None:
     """Send a single failure-alert email.
 
@@ -53,26 +53,24 @@ def send_failure_alert(
     ----------
     config:
         Pipeline configuration (holds SMTP credentials).
+    interest_name:
+        Name of the interest that failed.
     stage_name:
         Name of the failed stage (e.g. ``"scrape"``).
     error_message:
         Human-readable error description.
     traceback_str:
         Full traceback string from the exception.
-    log_tail:
-        Last ~100 lines of the pipeline log file.
     """
     from datetime import datetime
 
     date = datetime.now().strftime("%Y-%m-%d")
-    subject = f"AI Pipeline FAILURE — {stage_name} — {date}"
+    subject = f"{interest_name} Pipeline FAILURE — {stage_name} — {date}"
     body = (
         f"Stage: {stage_name}\n"
         f"Error: {error_message}\n"
         f"\n"
-        f"Traceback:\n{traceback_str}\n"
-        f"\n"
-        f"Recent logs:\n{log_tail}"
+        f"Traceback:\n{traceback_str}"
     )
     _send_email(config, subject, body)
     logger.info(
@@ -82,7 +80,7 @@ def send_failure_alert(
     )
 
 
-def run(run_id: int, db: Database, config: Config) -> None:
+def run(run_id: int, db: Database, config: Config, interest: InterestConfig) -> None:
     """Send success emails: one daily brief + one per approved theme.
 
     Parameters
@@ -93,6 +91,8 @@ def run(run_id: int, db: Database, config: Config) -> None:
         Database handle used to read deliverables.
     config:
         Pipeline configuration.
+    interest:
+        Interest configuration (controls deliverable toggles).
     """
     run = db.get_pipeline_run(run_id)
     if run is None:
@@ -102,16 +102,19 @@ def run(run_id: int, db: Database, config: Config) -> None:
     emails_sent = 0
 
     # --- daily brief ----------------------------------------------------------
-    brief_row = db._conn.execute(
-        "SELECT * FROM daily_briefs WHERE pipeline_run_id = ? "
-        "ORDER BY id DESC LIMIT 1",
-        (run_id,),
-    ).fetchone()
+    if interest.enable_brief:
+        brief_row = db._conn.execute(
+            "SELECT * FROM daily_briefs WHERE pipeline_run_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
 
-    if brief_row is not None:
-        brief = dict(brief_row)
-        _send_email(config, f"AI Daily Brief — {run_date}", brief["content"])
-        emails_sent += 1
+        if brief_row is not None:
+            brief = dict(brief_row)
+            _send_email(
+                config, f"{interest.name} Daily Brief — {run_date}", brief["content"]
+            )
+            emails_sent += 1
 
     # --- per-theme deliverables -----------------------------------------------
     theme_rows = db._conn.execute(
@@ -128,19 +131,26 @@ def run(run_id: int, db: Database, config: Config) -> None:
             continue
 
         parts: list[str] = []
-        for dtype, heading in [
-            ("summary_en", "=== ENGLISH SUMMARY ==="),
-            ("script_en", "=== ENGLISH SCRIPT ==="),
-            ("script_de", "=== GERMAN SCRIPT ==="),
-        ]:
-            if dtype in deliverables:
-                parts.append(f"{heading}\n{deliverables[dtype]['content']}")
+        if interest.enable_summary and "summary_en" in deliverables:
+            parts.append(
+                f"=== ENGLISH SUMMARY ===\n{deliverables['summary_en']['content']}"
+            )
+        if interest.enable_script_en and "script_en" in deliverables:
+            parts.append(
+                f"=== ENGLISH SCRIPT ===\n{deliverables['script_en']['content']}"
+            )
+        if interest.enable_script_de and "script_de" in deliverables:
+            parts.append(
+                f"=== GERMAN SCRIPT ===\n{deliverables['script_de']['content']}"
+            )
 
         if not parts:
             continue
 
         body = "\n\n".join(parts)
-        _send_email(config, f"AI Theme: {theme['title']} — {run_date}", body)
+        _send_email(
+            config, f"{interest.name} Theme: {theme['title']} — {run_date}", body
+        )
         emails_sent += 1
 
     logger.info(

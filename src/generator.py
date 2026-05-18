@@ -25,6 +25,7 @@ from typing import Optional
 from .config import Config
 from .db import Database
 from .llm import LLMClient
+from .models import InterestConfig
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class GeneratorError(Exception):
     """Raised when content generation fails."""
 
 
-def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> None:
+def run(run_id: int, db: Database, config: Config, llm_client: LLMClient, interest: InterestConfig) -> None:
     """Generate deliverables for all pending themes in this pipeline run.
 
     Called once by the orchestrator.  Processes pending themes concurrently
@@ -54,6 +55,8 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
         Parsed pipeline configuration.
     llm_client:
         Configured :class:`LLMClient` for OpenRouter calls.
+    interest:
+        Per-interest configuration controlling deliverable toggles and word counts.
     """
     themes = db.get_themes_for_run(run_id)
     pending = [t for t in themes if t["status"] == "pending"]
@@ -69,6 +72,7 @@ def run(run_id: int, db: Database, config: Config, llm_client: LLMClient) -> Non
             db=db,
             config=config,
             llm_client=llm_client,
+            interest=interest,
             theme=theme,
             articles=articles,
             version=1,
@@ -98,10 +102,11 @@ def refine(
     llm_client: LLMClient,
     theme_id: int,
     evaluation_feedback: str,
+    interest: InterestConfig,
 ) -> None:
     """Refine deliverables for a theme based on evaluation feedback.
 
-    Creates new versions (incremented from previous) for all three
+    Creates new versions (incremented from previous) for enabled
     deliverable types — ``script_en`` and ``script_de`` are refined
     in parallel.
 
@@ -119,6 +124,8 @@ def refine(
         The theme whose deliverables need refinement.
     evaluation_feedback:
         Concatenated feedback from quality and adversarial evaluators.
+    interest:
+        Per-interest configuration controlling deliverable toggles and word counts.
     """
     latest = db.get_latest_deliverables(theme_id)
     if not latest:
@@ -145,11 +152,12 @@ def refine(
 
     # Refine summary_en first (scripts depend on it for context)
     summary_content = None
-    if "summary_en" in latest:
+    if interest.enable_summary and "summary_en" in latest:
         summary_content = _refine_one(
             llm_client, config, refine_system, refine_user_template,
             theme, articles_text, current_version, evaluation_feedback,
             "summary_en", latest["summary_en"]["content"],
+            target_words=interest.target_summary_words,
         )
         new_version = current_version + 1
         with _db_write_lock:
@@ -160,7 +168,7 @@ def refine(
         )
 
     # Refine script_en and script_de in parallel
-    def _refine_script(dtype: str) -> None:
+    def _refine_script(dtype: str, target_words: int) -> None:
         if dtype not in latest:
             logger.warning("No %s deliverable for theme %d — skipping refine", dtype, theme_id)
             return
@@ -169,6 +177,7 @@ def refine(
             llm_client, config, refine_system, refine_user_template,
             theme, articles_text, current_version, evaluation_feedback,
             dtype, old,
+            target_words=target_words,
         )
         new_version = current_version + 1
         with _db_write_lock:
@@ -178,19 +187,19 @@ def refine(
             dtype, theme_id, new_version, _word_count(new),
         )
 
-    all_script_types = ("script_en", "script_de")
-    script_types = [d for d in all_script_types if d in latest]
-    missing = [d for d in all_script_types if d not in latest]
-    for d in missing:
-        logger.warning("No %s deliverable for theme %d — skipping refine", d, theme_id)
+    script_types = []
+    if interest.enable_script_en and "script_en" in latest:
+        script_types.append(("script_en", interest.target_script_en_words))
+    if interest.enable_script_de and "script_de" in latest:
+        script_types.append(("script_de", interest.target_script_de_words))
 
     if len(script_types) == 2:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(_refine_script, d) for d in script_types]
+            futures = [executor.submit(_refine_script, dtype, tw) for dtype, tw in script_types]
             for future in futures:
                 future.result()
     elif len(script_types) == 1:
-        _refine_script(script_types[0])
+        _refine_script(script_types[0][0], script_types[0][1])
 
 
 # ---------------------------------------------------------------------------
@@ -203,42 +212,65 @@ def _generate_theme_deliverables(
     db: Database,
     config: Config,
     llm_client: LLMClient,
+    interest: InterestConfig,
     theme: dict,
     articles: list[dict],
     version: int,
 ) -> None:
-    """Generate all three deliverables for a single theme.
+    """Generate deliverables for a single theme, respecting interest toggles.
 
-    ``summary_en`` is generated first; ``script_en`` and ``script_de`` are
-    then generated in parallel.
+    ``summary_en`` is generated first (if needed); ``script_en`` and
+    ``script_de`` are then generated in parallel (if enabled).
+
+    If at least one script is enabled but ``summary_en`` is disabled,
+    ``summary_en`` is still generated internally (scripts depend on it
+    for prompt context). Only when all deliverables are disabled is
+    ``summary_en`` truly skipped.
     """
     theme_id = theme["id"]
     theme_title = theme["title"]
     theme_description = theme["description"]
     articles_text = _build_articles_text(articles)
 
+    # Determine which deliverables to generate
+    generate_summary = interest.enable_summary
+    generate_script_en = interest.enable_script_en
+    generate_script_de = interest.enable_script_de
+
+    # If at least one script is enabled, summary is always needed as context
+    if (generate_script_en or generate_script_de) and not generate_summary:
+        generate_summary = True
+
     # ---- summary_en (must complete before scripts) ----
-    summary_en = _generate_one(
-        llm_client=llm_client,
-        config=config,
-        prompt_file="summary_en.txt",
-        fmt_kwargs={
-            "theme_title": theme_title,
-            "theme_description": theme_description,
-            "articles_text": articles_text,
-        },
-        deliverable_type="summary_en",
-        theme_id=theme_id,
-    )
-    with _db_write_lock:
-        db.insert_deliverable(theme_id, "summary_en", summary_en, version)
-    logger.info(
-        "Generated summary_en for theme %d — version %d (%d words)",
-        theme_id, version, _word_count(summary_en),
-    )
+    summary_en = None
+    if generate_summary:
+        summary_en = _generate_one(
+            llm_client=llm_client,
+            config=config,
+            prompt_file="summary_en.txt",
+            fmt_kwargs={
+                "theme_title": theme_title,
+                "theme_description": theme_description,
+                "articles_text": articles_text,
+            },
+            deliverable_type="summary_en",
+            theme_id=theme_id,
+            target_words=interest.target_summary_words,
+        )
+        with _db_write_lock:
+            db.insert_deliverable(theme_id, "summary_en", summary_en, version)
+        logger.info(
+            "Generated summary_en for theme %d — version %d (%d words)",
+            theme_id, version, _word_count(summary_en),
+        )
+    else:
+        logger.info(
+            "Skipping summary_en for theme %d — disabled by interest config",
+            theme_id,
+        )
 
     # ---- script_en + script_de in parallel ----
-    def _gen_script(dtype: str, prompt_file: str) -> str:
+    def _gen_script(dtype: str, prompt_file: str, target_words: int) -> str:
         return _generate_one(
             llm_client=llm_client,
             config=config,
@@ -246,31 +278,40 @@ def _generate_theme_deliverables(
             fmt_kwargs={
                 "theme_title": theme_title,
                 "theme_description": theme_description,
-                "summary_en": summary_en,
+                "summary_en": summary_en or "",
                 "articles_text": articles_text,
             },
             deliverable_type=dtype,
             theme_id=theme_id,
+            target_words=target_words,
         )
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        fut_en = executor.submit(_gen_script, "script_en", "script_en.txt")
-        fut_de = executor.submit(_gen_script, "script_de", "script_de.txt")
-        script_en = fut_en.result()
-        script_de = fut_de.result()
+    script_tasks = []
+    if generate_script_en:
+        script_tasks.append(("script_en", "script_en.txt", interest.target_script_en_words))
+    if generate_script_de:
+        script_tasks.append(("script_de", "script_de.txt", interest.target_script_de_words))
 
-    with _db_write_lock:
-        db.insert_deliverable(theme_id, "script_en", script_en, version)
-    logger.info(
-        "Generated script_en for theme %d — version %d (%d words)",
-        theme_id, version, _word_count(script_en),
-    )
-    with _db_write_lock:
-        db.insert_deliverable(theme_id, "script_de", script_de, version)
-    logger.info(
-        "Generated script_de for theme %d — version %d (%d words)",
-        theme_id, version, _word_count(script_de),
-    )
+    if script_tasks:
+        with ThreadPoolExecutor(max_workers=min(2, len(script_tasks))) as executor:
+            futures = {}
+            for dtype, prompt_file, tw in script_tasks:
+                future = executor.submit(_gen_script, dtype, prompt_file, tw)
+                futures[future] = (dtype, prompt_file)
+            for future in as_completed(futures):
+                dtype, _ = futures[future]
+                content = future.result()
+                with _db_write_lock:
+                    db.insert_deliverable(theme_id, dtype, content, version)
+                logger.info(
+                    "Generated %s for theme %d — version %d (%d words)",
+                    dtype, theme_id, version, _word_count(content),
+                )
+    else:
+        logger.info(
+            "Skipping script deliverables for theme %d — disabled by interest config",
+            theme_id,
+        )
 
 
 def _refine_one(
@@ -284,12 +325,14 @@ def _refine_one(
     evaluation_feedback: str,
     deliverable_type: str,
     old_content: str,
+    target_words: int | None = None,
 ) -> str:
     user_prompt = refine_user_template.format(
         deliverable_type=deliverable_type,
         current_content=old_content,
         evaluation_feedback=evaluation_feedback,
         articles_text=articles_text,
+        target_words=target_words,
     )
     try:
         return llm_client.complete(
@@ -311,6 +354,7 @@ def _generate_one(
     fmt_kwargs: dict,
     deliverable_type: str,
     theme_id: int,
+    target_words: int | None = None,
 ) -> str:
     """Load a prompt template, render it, call the LLM, and return the result."""
     template = (_PROMPTS_DIR / prompt_file).read_text(encoding="utf-8")
@@ -319,6 +363,7 @@ def _generate_one(
         raise GeneratorError(f"{prompt_file} prompt template is malformed")
 
     system_prompt = parts[0].replace("=== SYSTEM ===\n", "").strip()
+    fmt_kwargs["target_words"] = target_words
     user_prompt = parts[1].strip().format(**fmt_kwargs)
 
     try:

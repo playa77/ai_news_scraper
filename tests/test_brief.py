@@ -11,6 +11,7 @@ import pytest
 
 from src.brief import BriefError, _build_themes_section, _word_count, run
 from src.db import Database
+from src.models import InterestConfig
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ def mock_config():
 @pytest.fixture
 def seeded_run(db):
     """Create a single pipeline run and return its id."""
-    return db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+    return db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
 
 @pytest.fixture
@@ -82,7 +83,7 @@ def multi_theme_db(db, seeded_run):
       * Theme C — pending (should be excluded from brief)
     """
     # Insert a feed + articles so foreign keys are happy
-    feed_id = db.upsert_feed("https://example.com/rss", "AI News", "news")
+    feed_id = db.upsert_feed(db.get_interest_by_name("AI")["id"], "https://example.com/rss", "AI News", "news")
     a1 = db.insert_article(feed_id, "https://example.com/art1", "Article 1",
                            None, "2026-05-14T07:00:00", "2026-05-14T07:05:00",
                            None, None, "full", seeded_run)
@@ -172,7 +173,7 @@ class TestBuildThemesSection:
         theme_id = seeded_theme["theme_id"]
 
         themes = db.get_themes_for_run(seeded_theme["run_id"])
-        section = _build_themes_section(themes, db)
+        section = _build_themes_section(themes, db, InterestConfig(name="AI", id=1))
 
         assert "THEME: LLM Advances" in section
         assert "Type: emerging" in section
@@ -186,7 +187,7 @@ class TestBuildThemesSection:
         themes = db.get_themes_for_run(run_id)
         # Only approved/auto_approved — but _build_themes_section doesn't filter,
         # it formats whatever it receives.
-        section = _build_themes_section(themes, db)
+        section = _build_themes_section(themes, db, InterestConfig(name="AI", id=1))
 
         assert "THEME: LLM Advances" in section
         assert "THEME: AI Regulation" in section
@@ -200,14 +201,14 @@ class TestBuildThemesSection:
         db.update_theme_status(theme_id, "approved")
 
         theme = db.get_themes_for_run(seeded_run)[0]
-        section = _build_themes_section([theme], db)
+        section = _build_themes_section([theme], db, InterestConfig(name="AI", id=1))
 
         assert "THEME: Orphan Theme" in section
         assert "Summary: " in section  # present but empty
 
     def test_empty_themes_list(self, db):
         """Empty themes list produces empty string."""
-        assert _build_themes_section([], db) == ""
+        assert _build_themes_section([], db, InterestConfig(name="AI", id=1)) == ""
 
     def test_summary_uses_latest_version(self, db, seeded_run):
         """When multiple versions exist, the highest version is used."""
@@ -219,7 +220,7 @@ class TestBuildThemesSection:
         db.insert_deliverable(theme_id, "summary_en", "latest version", 2)
 
         theme = db.get_themes_for_run(seeded_run)[0]
-        section = _build_themes_section([theme], db)
+        section = _build_themes_section([theme], db, InterestConfig(name="AI", id=1))
 
         assert "Summary: latest version" in section
         assert "Summary: old version" not in section
@@ -233,7 +234,7 @@ class TestBuildThemesSection:
         db.insert_deliverable(theme_id, "social_post", "some social content", 1)
 
         theme = db.get_themes_for_run(seeded_run)[0]
-        section = _build_themes_section([theme], db)
+        section = _build_themes_section([theme], db, InterestConfig(name="AI", id=1))
 
         assert "THEME: Social Theme" in section
         assert "Summary: " in section  # empty because no summary_en
@@ -252,7 +253,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         mock_llm.complete.assert_called_once()
         call_kwargs = mock_llm.complete.call_args[1]
@@ -269,7 +270,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         # Retrieve the brief that was just inserted
         # (there should be exactly one brief for this run)
@@ -287,7 +288,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         pr = db.get_pipeline_run(run_id)
         assert pr["current_stage"] == "brief"
@@ -298,7 +299,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         call_kwargs = mock_llm.complete.call_args[1]
         assert "THEME: Quantum ML" not in call_kwargs["user_prompt"]
@@ -309,7 +310,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         call_kwargs = mock_llm.complete.call_args[1]
         assert "THEME: LLM Advances" in call_kwargs["user_prompt"]
@@ -320,7 +321,7 @@ class TestRunSuccess:
         db = seeded_theme["db"]
         run_id = seeded_theme["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         mock_llm.complete.assert_called_once()
         call_kwargs = mock_llm.complete.call_args[1]
@@ -337,7 +338,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         row = db._conn.execute(
             "SELECT * FROM daily_briefs WHERE pipeline_run_id = ?", (run_id,)
@@ -350,7 +351,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         row = db._conn.execute(
             "SELECT * FROM daily_briefs WHERE pipeline_run_id = ?", (run_id,)
@@ -364,7 +365,7 @@ class TestRunSuccess:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         row = db._conn.execute(
             "SELECT * FROM daily_briefs WHERE pipeline_run_id = ?", (run_id,)
@@ -388,7 +389,7 @@ class TestRunNoApprovedThemes:
                                    [], "emerging", 0)
         # explicitly pending — db.update_theme_status not called, stays 'pending'
 
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         # LLM should NOT have been called
         mock_llm.complete.assert_not_called()
@@ -403,7 +404,7 @@ class TestRunNoApprovedThemes:
     def test_no_themes_at_all_generates_placeholder(self, db, seeded_run,
                                                     mock_llm, mock_config):
         """When there are no themes at all, a placeholder brief is generated."""
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         mock_llm.complete.assert_not_called()
 
@@ -416,7 +417,7 @@ class TestRunNoApprovedThemes:
     def test_placeholder_word_count_is_accurate(self, db, seeded_run,
                                                 mock_llm, mock_config):
         """Placeholder brief has correct word_count stored."""
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         row = db._conn.execute(
             "SELECT * FROM daily_briefs WHERE pipeline_run_id = ?", (seeded_run,)
@@ -427,7 +428,7 @@ class TestRunNoApprovedThemes:
     def test_placeholder_stage_still_updated(self, db, seeded_run,
                                              mock_llm, mock_config):
         """Even with no themes, current_stage is still set to 'brief'."""
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         pr = db.get_pipeline_run(seeded_run)
         assert pr["current_stage"] == "brief"
@@ -452,7 +453,7 @@ class TestRunErrors:
         db.insert_deliverable(theme_id, "summary_en", "Some content", 1)
 
         with pytest.raises(BriefError, match="LLM call for daily brief failed"):
-            run(seeded_run, db, mock_config, mock_llm)
+            run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
     @patch("src.brief._PROMPTS_DIR")
     def test_malformed_prompt_template_raises_brief_error(self, mock_prompts_dir,
@@ -478,7 +479,7 @@ class TestRunErrors:
         db.insert_deliverable(theme_id, "summary_en", "Some content", 1)
 
         with pytest.raises(BriefError, match="brief.txt prompt template is malformed"):
-            run(seeded_run, db, mock_config, mock_llm)
+            run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
     def test_missing_deliverables_still_generates_brief(self, db, seeded_run,
                                                        mock_llm, mock_config):
@@ -490,7 +491,7 @@ class TestRunErrors:
         db.update_theme_status(theme_id, "approved")
         # No deliverables inserted
 
-        run(seeded_run, db, mock_config, mock_llm)
+        run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         mock_llm.complete.assert_called_once()
         call_kwargs = mock_llm.complete.call_args[1]
@@ -516,7 +517,7 @@ class TestRunErrors:
         db.insert_deliverable(theme_id, "summary_en", "Content", 1)
 
         with pytest.raises(BriefError, match="LLM call for daily brief failed"):
-            run(seeded_run, db, mock_config, mock_llm)
+            run(seeded_run, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
 
 # ---------------------------------------------------------------------------
@@ -532,13 +533,13 @@ class TestRunVerification:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
         # Reset mock call count for second invocation
         mock_llm.complete.reset_mock()
         # Need to re-set return_value since reset_mock clears it
         mock_llm.complete.return_value = _FAKE_BRIEF
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         pr = db.get_pipeline_run(run_id)
         assert pr["current_stage"] == "brief"
@@ -555,7 +556,7 @@ class TestRunVerification:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         call_kwargs = mock_llm.complete.call_args[1]
         system = call_kwargs["system_prompt"]
@@ -568,7 +569,7 @@ class TestRunVerification:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         call_kwargs = mock_llm.complete.call_args[1]
         user = call_kwargs["user_prompt"]
@@ -581,7 +582,7 @@ class TestRunVerification:
         db = multi_theme_db["db"]
         run_id = multi_theme_db["run_id"]
 
-        run(run_id, db, mock_config, mock_llm)
+        run(run_id, db, mock_config, mock_llm, InterestConfig(name="AI", id=1))
 
         call_kwargs = mock_llm.complete.call_args[1]
         assert "THEME: AI Regulation" in call_kwargs["user_prompt"]

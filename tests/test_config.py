@@ -17,10 +17,9 @@ def write_config_dir(config_dict, tmp_path):
     """Write each top-level key to a separate YAML file in a temp dir."""
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()
-    for key in REQUIRED_SECTIONS:
-        if key in config_dict:
-            with open(cfg_dir / f"{key}.yaml", "w") as f:
-                yaml.dump(config_dict[key], f)
+    for key in config_dict:
+        with open(cfg_dir / f"{key}.yaml", "w") as f:
+            yaml.dump(config_dict[key], f)
     return str(cfg_dir)
 
 
@@ -193,7 +192,7 @@ class TestMissingSections:
         import copy
         return copy.deepcopy(valid_config_dict)
 
-    @pytest.mark.parametrize("section", ["feeds", "models", "pipeline", "email", "database", "openrouter"])
+    @pytest.mark.parametrize("section", ["models", "pipeline", "email", "database", "openrouter"])
     def test_missing_section_raises_error(self, section, base_config, tmp_path, set_envs):
         del base_config[section]
         cfg_dir = write_config_dir(base_config, tmp_path)
@@ -202,23 +201,27 @@ class TestMissingSections:
 
 
 # ---------------------------------------------------------------------------
-# 6. Feed validation – empty lists
+# 6. Feed validation – empty lists (feeds are now optional / DB-backed)
 # ---------------------------------------------------------------------------
 
 class TestFeedValidation:
-    """Feeds.news and feeds.commentators must each have at least 1 entry."""
+    """Empty feed lists are accepted (feeds are loaded from the database)."""
 
-    def test_empty_news_raises_error(self, valid_config_dict, tmp_path, set_envs):
+    def test_empty_news_is_accepted(self, valid_config_dict, tmp_path, set_envs):
+        """An empty news feed list should not raise an error."""
         valid_config_dict["feeds"]["news"] = []
         cfg_dir = write_config_dir(valid_config_dict, tmp_path)
-        with pytest.raises(ConfigError, match="feeds.news must contain at least 1 feed"):
-            from_yaml(cfg_dir)
+        cfg = from_yaml(cfg_dir)
+        assert cfg.feeds is not None
+        assert cfg.feeds.news == []
 
-    def test_empty_commentators_raises_error(self, valid_config_dict, tmp_path, set_envs):
+    def test_empty_commentators_is_accepted(self, valid_config_dict, tmp_path, set_envs):
+        """An empty commentators list should not raise an error."""
         valid_config_dict["feeds"]["commentators"] = []
         cfg_dir = write_config_dir(valid_config_dict, tmp_path)
-        with pytest.raises(ConfigError, match="feeds.commentators must contain at least 1 feed"):
-            from_yaml(cfg_dir)
+        cfg = from_yaml(cfg_dir)
+        assert cfg.feeds is not None
+        assert cfg.feeds.commentators == []
 
 
 # ---------------------------------------------------------------------------

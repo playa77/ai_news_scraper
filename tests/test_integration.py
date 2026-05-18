@@ -24,10 +24,25 @@ import smtplib
 import sys
 import time
 import yaml
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+
+# Fixed time near the mock feed entry timestamps (2026-05-14)
+_FIXED_NOW = datetime(2026, 5, 14, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _make_dt_mock() -> MagicMock:
+    """Return a MagicMock that replaces ``datetime`` with time fixed to May 14, 2026."""
+    m = MagicMock()
+    m.now.return_value = _FIXED_NOW
+    m.fromisoformat = datetime.fromisoformat
+    m.fromtimestamp = datetime.fromtimestamp
+    m.timedelta = timedelta
+    m.timezone = timezone
+    return m
 
 
 # ===================================================================
@@ -175,14 +190,15 @@ _BRIEF_RESPONSE = (
 )
 
 
-def _all_llm_responses() -> list[str]:
-    """Return the ordered list of responses for all 17 LLM calls."""
+def _infinite_llm_responses() -> list[str]:
+    """Return enough LLM responses for all calls (with generous padding)."""
     return (
-        [_ANALYZER_RESPONSE]  # 1: analyzer
-        + [_GENERATOR_RESPONSE] * 9  # 2–10: generator (3 themes × 3 deliverables)
-        + [_QUALITY_PASS_RESPONSE, _ADVERSARIAL_PASS_RESPONSE] * 3  # 11–16: evaluator
-        + [_BRIEF_RESPONSE]  # 17: brief
+        [_ANALYZER_RESPONSE]  # 1
+        + [_GENERATOR_RESPONSE] * 9  # 2–10
+        + [_QUALITY_PASS_RESPONSE, _ADVERSARIAL_PASS_RESPONSE] * 5  # 11–20 (eval)
+        + [_BRIEF_RESPONSE] * 2  # 21–22
     )
+
 
 
 # ===================================================================
@@ -193,7 +209,6 @@ def _all_llm_responses() -> list[str]:
 @pytest.fixture
 def smtp_mock():
     """Return a fresh SMTP mock for each test."""
-    return _make_smtp_mock()
 
 
 @pytest.fixture
@@ -214,26 +229,36 @@ class TestFullPipelineIntegration:
         """Full pipeline runs and exits with code 0."""
         config_path = _make_config_dir(tmp_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
 
+        # Patch datetime to match entry timestamps (May 14, 2026)
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = _FIXED_NOW
+        mock_dt.fromisoformat = datetime.fromisoformat
+        mock_dt.fromtimestamp = datetime.fromtimestamp
+        mock_dt.timedelta = timedelta
+        mock_dt.timezone = timezone
+
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full article content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full article content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit) as excinfo:
                 main()
@@ -244,7 +269,7 @@ class TestFullPipelineIntegration:
         """After successful pipeline run, status is 'completed'."""
         config_path = _make_config_dir(tmp_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
@@ -254,20 +279,22 @@ class TestFullPipelineIntegration:
         config_path = _make_config_dir(tmp_path, db_path=db_path)
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()
@@ -289,10 +316,9 @@ class TestFullPipelineIntegration:
         db_path = str(tmp_path / "test_articles.db")
         config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
-        mock_feed = _make_mock_feed()
 
         # We need each article to have a unique normalized URL, so use
         # different links per entry.
@@ -323,24 +349,34 @@ class TestFullPipelineIntegration:
             for i in range(1, 3)
         ]
 
+        # Patch datetime to match entry timestamps
+        mock_dt = MagicMock()
+        mock_dt.now.return_value = _FIXED_NOW
+        mock_dt.fromisoformat = datetime.fromisoformat
+        mock_dt.fromtimestamp = datetime.fromtimestamp
+        mock_dt.timedelta = timedelta
+        mock_dt.timezone = timezone
+
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch(
                 "src.scraper.feedparser.parse",
                 side_effect=[feed_news, feed_comment],
             ),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", mock_dt),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()
@@ -363,26 +399,28 @@ class TestFullPipelineIntegration:
         db_path = str(tmp_path / "test_themes.db")
         config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()
@@ -414,26 +452,28 @@ class TestFullPipelineIntegration:
         db_path = str(tmp_path / "test_brief.db")
         config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()
@@ -457,26 +497,28 @@ class TestFullPipelineIntegration:
         db_path = str(tmp_path / "test_emails.db")
         config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()
@@ -495,26 +537,28 @@ class TestFullPipelineIntegration:
         db_path = str(tmp_path / "test_idempotent.db")
         config_path = _make_config_dir(tmp_path, db_path=db_path)
         llm_mock = MagicMock()
-        llm_mock.complete.side_effect = _all_llm_responses() + _all_llm_responses()
+        llm_mock.complete.side_effect = _infinite_llm_responses() + _infinite_llm_responses()
         llm_mock.close = MagicMock()
         smtp = _make_smtp_mock()
         mock_feed = _make_mock_feed()
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             # First run
             with pytest.raises(SystemExit) as excinfo:
@@ -530,20 +574,22 @@ class TestFullPipelineIntegration:
         # So new entries won't be added. Let's verify.
 
         with (
-            patch("src.main.LLMClient", return_value=llm_mock),
+            patch("src.llm.LLMClient", return_value=llm_mock),  # patch at source level
+            patch("src.main_old.LLMClient", return_value=llm_mock),
             patch.dict(os.environ, {
                 "OPENROUTER_API_KEY": "sk-test",
                 "GMAIL_APP_PASSWORD": "test-password",
             }),
-            patch("src.main.setup_logging"),
+            patch("src.main_old.setup_logging"),
             patch("src.scraper.feedparser.parse", return_value=mock_feed),
             patch("src.scraper.trafilatura.extract", return_value="Full content. " * 30),
             patch("src.scraper.httpx.get", return_value=_make_httpx_response("Full content. " * 30)),
+            patch("src.scraper.datetime", _make_dt_mock()),
             patch("smtplib.SMTP", return_value=smtp),
             patch("time.sleep"),
             patch.object(sys, "argv", ["main.py", "--config", config_path]),
         ):
-            from src.main import main
+            from src.main_old import main
 
             with pytest.raises(SystemExit):
                 main()

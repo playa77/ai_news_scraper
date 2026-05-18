@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.db import Database
+from src.models import InterestConfig
 from src.evaluator import (
     _all_quality_pass,
     _build_combined_feedback,
@@ -70,8 +71,8 @@ def seeded_evaluator_db(db, sample_articles):
     Returns a dict with ``db``, ``run_id``, ``theme_id``, and ``article_ids``
     so tests can reference the stored IDs.
     """
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-    feed_id = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+    run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
+    feed_id = db.upsert_feed(db.get_interest_by_name("AI")["id"], "https://example.com/rss", "Example Feed", "news")
 
     article_ids = []
     for art in sample_articles:
@@ -201,7 +202,7 @@ class TestFallbackQualityFail:
             "script_en": {"content": "y", "version": 1},
             "script_de": {"content": "z", "version": 1},
         }
-        result = _fallback_quality_fail(deliverables, "LLM error")
+        result = _fallback_quality_fail(deliverables, "LLM error", InterestConfig(name="test"))
         assert "summary_en" in result
         assert "script_en" in result
         assert "script_de" in result
@@ -213,7 +214,7 @@ class TestFallbackQualityFail:
             "script_en": {"content": "y", "version": 1},
             "script_de": {"content": "z", "version": 1},
         }
-        result = _fallback_quality_fail(deliverables, "Some reason")
+        result = _fallback_quality_fail(deliverables, "Some reason", InterestConfig(name="test"))
         for dtype in ("summary_en", "script_en", "script_de"):
             assert result[dtype]["pass"] is False
 
@@ -225,13 +226,13 @@ class TestFallbackQualityFail:
             "script_de": {"content": "z", "version": 1},
         }
         reason = "LLM API unreachable"
-        result = _fallback_quality_fail(deliverables, reason)
+        result = _fallback_quality_fail(deliverables, reason, InterestConfig(name="test"))
         for dtype in ("summary_en", "script_en", "script_de"):
             assert reason in result[dtype]["feedback"]
 
     def test_handles_missing_deliverable_keys_gracefully(self):
         """Missing deliverable types are omitted from the result."""
-        result = _fallback_quality_fail({}, "No deliverables")
+        result = _fallback_quality_fail({}, "No deliverables", InterestConfig(name="test"))
         assert result == {
             "summary_en": {"pass": False, "feedback": "Evaluation could not be completed: No deliverables"},
             "script_en": {"pass": False, "feedback": "Evaluation could not be completed: No deliverables"},
@@ -254,7 +255,7 @@ class TestAllQualityPass:
             "script_en": {"pass": True, "feedback": "Good"},
             "script_de": {"pass": True, "feedback": "Good"},
         }
-        assert _all_quality_pass(quality_result) is True
+        assert _all_quality_pass(quality_result, InterestConfig(name="test")) is True
 
     def test_any_single_fail_returns_false(self):
         """One deliverable failing returns False."""
@@ -263,13 +264,13 @@ class TestAllQualityPass:
             "script_en": {"pass": False, "feedback": "Too short"},
             "script_de": {"pass": True, "feedback": "Good"},
         }
-        assert _all_quality_pass(quality_result) is False
+        assert _all_quality_pass(quality_result, InterestConfig(name="test")) is False
 
         # Try each position
         for failing_dtype in ("summary_en", "script_en", "script_de"):
             qr = {d: {"pass": True, "feedback": ""} for d in ("summary_en", "script_en", "script_de")}
             qr[failing_dtype]["pass"] = False
-            assert _all_quality_pass(qr) is False, f"Expected False when {failing_dtype} fails"
+            assert _all_quality_pass(qr, InterestConfig(name="test")) is False, f"Expected False when {failing_dtype} fails"
 
     def test_all_fail_returns_false(self):
         """All three deliverables failing returns False."""
@@ -278,7 +279,7 @@ class TestAllQualityPass:
             "script_en": {"pass": False, "feedback": "Bad"},
             "script_de": {"pass": False, "feedback": "Bad"},
         }
-        assert _all_quality_pass(quality_result) is False
+        assert _all_quality_pass(quality_result, InterestConfig(name="test")) is False
 
     def test_missing_deliverable_type_is_skipped(self):
         """A missing deliverable type is skipped (only present types are checked)."""
@@ -287,11 +288,11 @@ class TestAllQualityPass:
             "script_en": {"pass": True, "feedback": "Good"},
             # script_de is missing
         }
-        assert _all_quality_pass(quality_result) is True
+        assert _all_quality_pass(quality_result, InterestConfig(name="test")) is True
 
     def test_empty_dict_returns_true(self):
         """An empty quality result returns True (nothing to fail)."""
-        assert _all_quality_pass({}) is True
+        assert _all_quality_pass({}, InterestConfig(name="test")) is True
 
     def test_nested_pass_key_missing_returns_false(self):
         """A deliverable with no 'pass' key defaults to False."""
@@ -300,7 +301,7 @@ class TestAllQualityPass:
             "script_en": {"pass": True, "feedback": "Good"},
             "script_de": {"pass": True, "feedback": "Good"},
         }
-        assert _all_quality_pass(quality_result) is False
+        assert _all_quality_pass(quality_result, InterestConfig(name="test")) is False
 
 
 # ===================================================================
@@ -319,7 +320,7 @@ class TestBuildCombinedFeedback:
             "script_de": {"pass": True, "feedback": "Gut geschrieben"},
         }
         adversarial_result = {"pass": True, "feedback": "No issues", "issues": []}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "=== QUALITY FEEDBACK ===" in result
         assert "summary_en: PASS" in result
@@ -341,7 +342,7 @@ class TestBuildCombinedFeedback:
             "feedback": "Found factual errors",
             "issues": [],
         }
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "=== ADVERSARIAL FEEDBACK ===" in result
         assert "Overall: FAIL" in result
@@ -355,7 +356,7 @@ class TestBuildCombinedFeedback:
             "script_de": {"pass": True, "feedback": "Good"},
         }
         adversarial_result = {"pass": True, "feedback": "All accurate", "issues": []}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "Overall: PASS" in result
 
@@ -374,7 +375,7 @@ class TestBuildCombinedFeedback:
                 {"deliverable": "script_en", "problem": "bias", "claim": "AI will replace all jobs"},
             ],
         }
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "Issues found:" in result
         assert "[summary_en] hallucination: GPT-5 has 1T params" in result
@@ -388,7 +389,7 @@ class TestBuildCombinedFeedback:
             "script_de": {"pass": True, "feedback": "Good"},
         }
         adversarial_result = {"pass": True, "feedback": "Clean", "issues": []}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "Issues found:" not in result
 
@@ -400,7 +401,7 @@ class TestBuildCombinedFeedback:
             "script_de": {"pass": True, "feedback": "Good"},
         }
         adversarial_result = {"pass": True, "feedback": "Clean"}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "Issues found:" not in result
 
@@ -411,7 +412,7 @@ class TestBuildCombinedFeedback:
             # script_en and script_de missing
         }
         adversarial_result = {"pass": True, "feedback": "Clean", "issues": []}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "summary_en: PASS" in result
         assert "script_en:" not in result
@@ -425,7 +426,7 @@ class TestBuildCombinedFeedback:
             "script_de": {"pass": True},
         }
         adversarial_result = {"pass": True}
-        result = _build_combined_feedback(quality_result, adversarial_result)
+        result = _build_combined_feedback(quality_result, adversarial_result, InterestConfig(name="test"))
 
         assert "No feedback" in result
 
@@ -509,7 +510,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "approved"
 
@@ -531,7 +532,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         theme_row = db._conn.execute("SELECT * FROM themes WHERE id = ?", (theme_id,)).fetchone()
         assert theme_row["status"] == "approved"
@@ -554,7 +555,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert len(evals) == 1
@@ -582,7 +583,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -606,7 +607,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -630,7 +631,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -654,7 +655,7 @@ class TestRunApprovalFlow:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert len(evals) == 1
@@ -689,7 +690,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert evals[0]["round_number"] == 1
@@ -723,7 +724,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert len(evals) == 2
@@ -751,7 +752,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert len(evals) == 3
@@ -781,7 +782,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "approved"
 
@@ -808,7 +809,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         theme_row = db._conn.execute("SELECT * FROM themes WHERE id = ?", (theme_id,)).fetchone()
         assert theme_row["status"] == "auto_approved"
@@ -836,7 +837,7 @@ class TestRunRefinementLoop:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            run(run_id, db, mock_config, mock_llm, theme_id)
+            run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         evals = db.get_evaluation_rounds(theme_id)
         assert len(evals) == 3
@@ -862,7 +863,7 @@ class TestRunEdgeCases:
         db._conn.execute("DELETE FROM deliverables WHERE theme_id = ?", (theme_id,))
         db._conn.commit()
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "approved"
         theme_row = db._conn.execute("SELECT * FROM themes WHERE id = ?", (theme_id,)).fetchone()
@@ -878,7 +879,7 @@ class TestRunEdgeCases:
         db._conn.execute("DELETE FROM deliverables WHERE theme_id = ?", (theme_id,))
         db._conn.commit()
 
-        run(run_id, db, mock_config, mock_llm, theme_id)
+        run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
         mock_llm.complete.assert_not_called()
 
     def test_theme_not_found_raises_value_error(self, seeded_evaluator_db, mock_config, mock_llm):
@@ -889,7 +890,7 @@ class TestRunEdgeCases:
 
         # Use a non-existent theme_id
         with pytest.raises(ValueError, match="Theme 9999 not found in run"):
-            run(run_id, db, mock_config, mock_llm, 9999)
+            run(run_id, db, mock_config, mock_llm, 9999, InterestConfig(name="AI", id=1))
 
     def test_llm_error_in_quality_eval_falls_back_and_overall_fails(
         self, seeded_evaluator_db, mock_config, mock_llm
@@ -911,11 +912,12 @@ class TestRunEdgeCases:
                         "script_de": {"content": "z", "version": 1},
                     },
                     "LLM error: API unreachable",
+                    InterestConfig(name="test"),
                 ),
             ),
             patch("src.evaluator._run_adversarial_eval", return_value={"pass": True, "feedback": "OK", "issues": []}),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -940,7 +942,7 @@ class TestRunEdgeCases:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_fallback),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         # Quality passes + adversarial skip-pass = overall pass
         assert result == "approved"
@@ -964,10 +966,11 @@ class TestRunEdgeCases:
                     "script_de": {"content": "z", "version": 1},
                 },
                 "JSON parse error",
+                InterestConfig(name="test"),
             )),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -992,7 +995,7 @@ class TestRunEdgeCases:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_skip),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "approved"
 
@@ -1021,7 +1024,7 @@ class TestRunEdgeCases:
             patch("src.evaluator._run_quality_eval", return_value=quality_result),
             patch("src.evaluator._run_adversarial_eval", return_value=adversarial_result),
         ):
-            result = run(run_id, db, mock_config, mock_llm, theme_id)
+            result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         # Next round should be 4
         evals = db.get_evaluation_rounds(theme_id)
@@ -1055,7 +1058,7 @@ class TestRunQualityEval:
             "script_de": {"pass": False, "feedback": "Too short"},
         })
 
-        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, articles_text)
+        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, articles_text, InterestConfig(name="test"))
 
         assert result["summary_en"]["pass"] is True
         assert result["script_en"]["pass"] is True
@@ -1074,7 +1077,7 @@ class TestRunQualityEval:
 
         mock_llm.complete.side_effect = RuntimeError("API timeout")
 
-        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         for dtype in ("summary_en", "script_en", "script_de"):
             assert result[dtype]["pass"] is False
@@ -1092,7 +1095,7 @@ class TestRunQualityEval:
 
         mock_llm.complete.return_value = "not json"
 
-        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         for dtype in ("summary_en", "script_en", "script_de"):
             assert result[dtype]["pass"] is False
@@ -1114,7 +1117,7 @@ class TestRunQualityEval:
             "script_de": {"pass": True, "feedback": "OK"},
         })
 
-        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         mock_llm.complete.assert_called_once()
         call_kwargs = mock_llm.complete.call_args[1]
@@ -1137,7 +1140,7 @@ class TestRunQualityEval:
             "script_de": {"pass": True, "feedback": "OK"},
         })
 
-        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         call_kwargs = mock_llm.complete.call_args[1]
         system_prompt = call_kwargs["system_prompt"]
@@ -1159,7 +1162,7 @@ class TestRunQualityEval:
             "script_de": {"pass": True, "feedback": "OK"},
         })
 
-        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        _run_quality_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         call_kwargs = mock_llm.complete.call_args[1]
         user_prompt = call_kwargs["user_prompt"]
@@ -1193,7 +1196,7 @@ class TestRunAdversarialEval:
             "issues": [],
         })
 
-        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         assert result["pass"] is True
         assert result["feedback"] == "All claims verified"
@@ -1217,7 +1220,7 @@ class TestRunAdversarialEval:
             ],
         })
 
-        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         assert result["pass"] is False
         assert len(result["issues"]) == 1
@@ -1234,7 +1237,7 @@ class TestRunAdversarialEval:
 
         mock_llm.complete.side_effect = ConnectionError("Network error")
 
-        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         assert result["pass"] is True
         assert "LLM error" in result["feedback"] or "skipping" in result["feedback"]
@@ -1252,7 +1255,7 @@ class TestRunAdversarialEval:
 
         mock_llm.complete.return_value = "not json at all"
 
-        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        result = _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         assert result["pass"] is True
         assert "JSON parse error" in result["feedback"]
@@ -1272,7 +1275,7 @@ class TestRunAdversarialEval:
             "pass": True, "feedback": "OK", "issues": [],
         })
 
-        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         mock_llm.complete.assert_called_once()
         call_kwargs = mock_llm.complete.call_args[1]
@@ -1293,7 +1296,7 @@ class TestRunAdversarialEval:
             "pass": True, "feedback": "OK", "issues": [],
         })
 
-        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles")
+        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "articles", InterestConfig(name="test"))
 
         call_kwargs = mock_llm.complete.call_args[1]
         system_prompt = call_kwargs["system_prompt"]
@@ -1313,7 +1316,7 @@ class TestRunAdversarialEval:
             "pass": True, "feedback": "OK", "issues": [],
         })
 
-        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "Test article text for adversarial")
+        _run_adversarial_eval(mock_llm, mock_config, theme, deliverables, "Test article text for adversarial", InterestConfig(name="test"))
 
         call_kwargs = mock_llm.complete.call_args[1]
         user_prompt = call_kwargs["user_prompt"]
@@ -1350,7 +1353,7 @@ class TestRunLLMIntegration:
 
         mock_llm.complete.side_effect = [quality_response, adversarial_response]
 
-        run(run_id, db, mock_config, mock_llm, theme_id)
+        run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert mock_llm.complete.call_count == 2
 
@@ -1374,7 +1377,7 @@ class TestRunLLMIntegration:
 
         mock_llm.complete.side_effect = [quality_response, adversarial_response]
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -1400,7 +1403,7 @@ class TestRunLLMIntegration:
 
         mock_llm.complete.side_effect = [quality_response, adversarial_response]
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -1424,7 +1427,7 @@ class TestRunLLMIntegration:
 
         mock_llm.complete.side_effect = [quality_response, adversarial_response]
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "approved"
 
@@ -1442,7 +1445,7 @@ class TestRunLLMIntegration:
             "pass": True, "feedback": "Accurate", "issues": [],
         })]
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         assert result == "needs_refinement"
 
@@ -1462,7 +1465,7 @@ class TestRunLLMIntegration:
         })
         mock_llm.complete.side_effect = [quality_response, RuntimeError("Adversarial API error")]
 
-        result = run(run_id, db, mock_config, mock_llm, theme_id)
+        result = run(run_id, db, mock_config, mock_llm, theme_id, InterestConfig(name="AI", id=1))
 
         # Quality passes + adversarial skip → approved
         assert result == "approved"

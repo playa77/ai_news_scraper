@@ -110,8 +110,9 @@ def seeded_articles_db(db, sample_articles):
     Returns a dict with ``db``, ``run_id``, ``feed_id``, and ``article_ids``
     so tests can reference the stored IDs.
     """
-    run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
-    feed_id = db.upsert_feed("https://example.com/rss", "Example Feed", "news")
+    ai_id = db.get_interest_by_name("AI")["id"]
+    run_id = db.create_pipeline_run(ai_id, "2026-05-14", "2026-05-14T06:00:00")
+    feed_id = db.upsert_feed(ai_id, "https://example.com/rss", "Example Feed", "news")
 
     article_ids = []
     for art in sample_articles:
@@ -495,7 +496,7 @@ class TestRunIntegration:
 
     def test_no_articles_skips_analysis(self, db, mock_llm, mock_config):
         """When there are no articles for the run, analysis is skipped and no themes are stored."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
         run(run_id, db, mock_config, mock_llm)
 
@@ -513,7 +514,7 @@ class TestRunIntegration:
         run_id = ctx["run_id"]
 
         # Create a previous completed run with a daily brief
-        prev_run_id = db.create_pipeline_run("2026-05-13", "2026-05-13T06:00:00")
+        prev_run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-13", "2026-05-13T06:00:00")
         db.update_pipeline_run(prev_run_id, status="completed", completed_at="2026-05-13T06:30:00")
         db.insert_daily_brief(prev_run_id, "Yesterday's AI summary.", 15)
 
@@ -622,7 +623,7 @@ class TestRunIntegration:
         self, db, mock_llm, mock_config
     ):
         """current_stage is set to 'analyze' even when there are no articles."""
-        run_id = db.create_pipeline_run("2026-05-14", "2026-05-14T06:00:00")
+        run_id = db.create_pipeline_run(db.get_interest_by_name("AI")["id"], "2026-05-14", "2026-05-14T06:00:00")
 
         run(run_id, db, mock_config, mock_llm)
 
